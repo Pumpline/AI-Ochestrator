@@ -10,7 +10,7 @@ public static class OpenClawState
 {
     public sealed record FlowRow(
         string FlowId, int Revision, string Status, string? CurrentStep, string? BlockedSummary, string? WaitJson,
-        long? CreatedAt, long? UpdatedAt, long? EndedAt);
+        string? StateJson, long? CreatedAt, long? UpdatedAt, long? EndedAt);
 
     public sealed record ApprovalRow(
         string ApprovalId, string? FlowId, string? Kind, string Status, string? Decision, string? ResolverKind,
@@ -32,7 +32,7 @@ public static class OpenClawState
     public static async Task<List<FlowRow>> ReadFlowsAsync(SqliteConnection conn, long nowMs, CancellationToken ct)
     {
         const string sql = """
-            select flow_id, revision, status, current_step, blocked_summary, wait_json, created_at, updated_at, ended_at
+            select flow_id, revision, status, current_step, blocked_summary, wait_json, state_json, created_at, updated_at, ended_at
             from flow_runs
             where ended_at is null or ended_at > @recent
             order by updated_at
@@ -48,8 +48,8 @@ public static class OpenClawState
                 r.GetString(0),
                 r.IsDBNull(1) ? 0 : r.GetInt32(1),
                 r.IsDBNull(2) ? "" : r.GetString(2),
-                Str(r, 3), Str(r, 4), Str(r, 5),
-                Long(r, 6), Long(r, 7), Long(r, 8)));
+                Str(r, 3), Str(r, 4), Str(r, 5), Str(r, 6),
+                Long(r, 7), Long(r, 8), Long(r, 9)));
         }
         return rows;
     }

@@ -278,6 +278,7 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
     <li><a href="#s13"><i>§13</i> Bauplan</a></li>
     <li><a href="#s14"><i>§14</i> Tag 1</a></li>
     <li><a href="#s15"><i>§15</i> Zielumgebung srv1</a></li>
+    <li><a href="#s16"><i>§16</i> Der erste Flow</a></li>
   </ol>
 </nav>
 
@@ -898,6 +899,13 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
     <li><strong>Backup hängt sich an den vorhandenen Cron.</strong> srv1 sichert täglich und wöchentlich mit Retention nach <code>db-archive</code>. Eine <code>pg_dump</code>-Zeile dort erfüllt die Betriebsregel aus §9, ohne ein zweites Backup-System.</li>
   </ul>
   <p>Kleinigkeiten, die sonst den ersten Deploy kosten: Port 5432 ist belegt, 4317 gehört netdata (der Collector nimmt deshalb nur OTLP/HTTP auf 4318), und <code>sudo</code> verlangt ein Passwort — der Stack ist so geschnitten, dass er als <code>admin</code> in der docker-Gruppe ohne Root läuft, bis auf das einmalige Anlegen von <code>/opt/agentops</code>.</p>
+</section>
+
+<section id="s16">
+  <h3><span class="num">§16</span>Der erste Flow</h3>
+  <p>Flows lassen sich in OpenClaw nicht per Kommandozeile anlegen. Entweder ein Agent delegiert im Hintergrund — dann entsteht ein Ein-Schritt-Flow von selbst — oder ein <em>Plugin</em> führt einen Flow mit eigenen Schritten über die Runtime-API: <code>createManaged</code>, <code>runTask</code>, <code>setWaiting</code>, <code>resume</code>, <code>finish</code>. Das zweite ist wörtlich die Variante B aus §5, und so wurde die Pipeline gebaut: <strong>ein OpenClaw-Plugin, in dem die Reihenfolge plan → code → test → review → Gate → ship im Code steht.</strong> Jeder Schritt ist ein Subagent-Lauf mit eigener Soul und minimalem Kontext; die Übergabe läuft über Dateien im Repo, nicht über ein Modell in der Mitte. Das Gate ist ein Wartezustand, den ein Mensch per Aufruf auflöst — der Connector macht daraus dieselben Events wie aus OpenClaws eigenen Freigaben.</p>
+  <p><strong>Erster Lauf am 5. September 2026</strong> auf einem Wegwerf-Repo, Ziel „eine Funktion mit Test ergänzen“: Plan, Code, Tests grün, Review „APPROVE“, Gate freigegeben, Commit, Flow beendet. Drei Schritte in neunzig Sekunden, rund 0,60 USD für den ganzen Lauf. Das Cockpit zeigte die Stufen live, aus der echten State-Datei, ohne dass irgendwer dem Cockpit etwas geschickt hätte — der Blueprint-Satz „observe, don't drive“ hält.</p>
+  <p>Zwei Dinge hat der Lauf gelehrt. Erstens: OpenClaw lädt Plugin-Instanzen mehrfach und neu — ein Plugin darf sich nichts merken; welcher Lauf zu welchem Flow gehört, muss im Flow selbst stehen. Zweitens: Kosten entstehen im Kontext, nicht in der Antwort. Der Default-Agent mit allen Skills kostete 0,18 USD für ein „OK“; ein Pipeline-Schritt mit kurzer Soul und minimalem Kontext kostet einen Bruchteil davon. Genau das war die Behauptung in §1 und §4, jetzt mit Zahlen.</p>
 </section>
 
 <footer>

@@ -118,6 +118,8 @@ der Socket wäre nur Beschleuniger (§10).
 | `operator_approvals` | `status` = pending | `GatePending` |
 | `operator_approvals` | `status` = allowed | `ApprovalGranted` (actor_ref: `resolver_id`) |
 | `operator_approvals` | `status` ∈ denied, expired, cancelled | `ApprovalDenied` |
+| `flow_runs` | `status` = waiting mit `wait_json.kind` = gate (Plugin-Gate) | `GatePending` (`gate:<flow>:<step>`) |
+| `flow_runs` | verlässt waiting, `state_json.gate.decision` = allow / deny | `ApprovalGranted` / `ApprovalDenied` (actor_ref: `gate.by`) |
 
 Nur Revisionen, die Schritt oder Status ändern, erzeugen ein Event; Idempotenzschlüssel `flow:revision:art`.
 Das Gesehene steht als Cursor-Dokument (`FlowCursor`, `ApprovalCursor`, Schema `agentops`) **in derselben
@@ -138,6 +140,53 @@ docker compose --profile app run --rm --no-deps agentops --check </dev/null   # 
 ```
 
 Bestanden 2026-09-05: 10 Events in 4 Streams, Reihenfolge domänenkorrekt, zweiter Poll 0 Events, Prüfsumme nach Rebuild identisch.
+
+## Die Pipeline: OpenClaw-Plugin `agentops-pipeline`
+
+`infra/openclaw/plugins/agentops-pipeline/` — ein OpenClaw-Plugin (ESM, kein Build), das plan → code → test → review →
+**Gate** → ship als *managed TaskFlow* führt. Die Reihenfolge steht im Code (§5, Variante B); jeder Schritt ist ein
+Subagent-Lauf mit eigener Soul (`extraSystemPrompt`), `promptMode: minimal` und `lightContext` — der Kontext bleibt klein.
+Übergabe zwischen den Schritten über Dateien in `.agentops/` im Repo (`plan.md`, `code.md`, `test.md`, `review.md`, `ship.md`),
+nicht über ein Modell in der Mitte. Das Plugin hält keinen Zustand: welcher Lauf zu welchem Flow gehört, steht im Flow
+(`stateJson.runs[currentStep]`) — OpenClaw lädt Plugin-Instanzen mehrfach und neu, ein Speicher im Plugin geht verloren.
+
+HTTP-API am Gateway, Auth = Gateway-Token:
+
+```bash
+T=$(grep '^OPENCLAW_GATEWAY_TOKEN=' /opt/agentops/.env | cut -d= -f2); H="Authorization: Bearer $T"; U=http://127.0.0.1:18789/plugins/agentops-pipeline
+curl -s -H "$H" -H 'Content-Type: application/json' -d '{"repo":"agentops-playground","goal":"…"}' $U/start   # Flow anlegen, plan startet
+curl -s -H "$H" $U                                    # alle Pipeline-Flows
+curl -s -H "$H" $U/<flowId>                           # einer
+curl -s -H "$H" -d '{"decision":"allow","by":"leo"}' $U/<flowId>/gate      # Gate vor ship: allow | deny
+curl -s -H "$H" -d '{"by":"leo"}' $U/<flowId>/advance                      # Operator-Eingriff: Schritt als beendet behandeln
+```
+
+Das Gate ist ein `waiting`-Zustand mit `waitJson.kind = "gate"`; die Entscheidung landet in `stateJson.gate`. Der Connector
+macht daraus `GatePending` / `ApprovalGranted` / `ApprovalDenied` mit `gate:<flowId>:<step>` als Approval-ID und dem
+Freigebenden aus `gate.by` — dieselben Events wie bei OpenClaws eigenen `operator_approvals`.
+
+Installieren auf srv1 (das Verzeichnis liegt in OpenClaws Home, nicht im Git-Checkout):
+
+```bash
+cd /opt/agentops
+cp -r infra/openclaw/plugins/agentops-pipeline openclaw/extensions/
+mkdir -p openclaw/extensions/agentops-pipeline/node_modules && ln -sfn /app openclaw/extensions/agentops-pipeline/node_modules/openclaw
+docker exec agentops-openclaw node openclaw.mjs config set plugins.allow '["diagnostics-otel","agentops-pipeline"]'
+docker exec agentops-openclaw node openclaw.mjs config set plugins.entries.agentops-pipeline '{"enabled":true,"config":{"reposRoot":"/home/node/repos","ownerSessionKey":"agent:main:main"}}'
+docker compose --profile openclaw restart openclaw
+```
+
+Aktualisieren = `index.js` neu kopieren und Gateway neu starten. Der Symlink `node_modules/openclaw → /app` löst
+`openclaw/plugin-sdk/plugin-entry` im Container auf.
+
+**Erster echter Lauf, 2026-09-05, Wegwerf-Repo `/opt/repos/agentops-playground`** (Node, `node --test`), Ziel
+„multiply(a, b) mit Test": plan → code → test (2/2 grün) → review (APPROVE) → Gate (allow durch leo) → ship
+(Commit `bac9d20`) → succeeded. Drei Schritte in 90 s, Gesamtkosten rund **0,6 USD**. Im Cockpit als
+`StageEntered` ×6 und `FlowCompleted`, Board und `/api/flows/{id}/events` zeigen die Zeitleiste.
+
+Bekannte Lücke: `runTask` meldet „Task backing ownership could not be verified" — die Schritt-Läufe werden nicht
+als Kind-Tasks des Flows verbucht (`task_runs.parent_flow_id` bleibt leer). Der Flow läuft trotzdem; betroffen ist
+nur der Join von OpenClaws Exec-Approvals auf den Flow. Review-Ergebnis `REQUEST_CHANGES` verzweigt in v0.1 noch nicht.
 
 ## Read-API (P2) und Grafana-Board (P3)
 

@@ -70,4 +70,15 @@ else:
         d.execute("update operator_approvals set status='allowed', decision='allow-once', resolver_kind='device', resolver_id='device-42', resolved_at_ms=?, updated_at_ms=? where approval_id='apr1'", (now, now))
         d.execute("update flow_runs set revision=5, current_step='ship', status='succeeded', updated_at=?, ended_at=? where flow_id='f1'", (now, now))
         print("phase 4: apr1 allow durch device-42; f1 ship succeeded rev 5")
+    # Plugin-Gate (agentops-pipeline): waiting mit waitJson.kind = "gate", Entscheidung in stateJson.gate.
+    elif phase == 5:
+        insert(d, "flow_runs", {"flow_id": "f3", "revision": 4, "status": "waiting", "current_step": "gate", "owner_key": "test",
+                                "wait_json": '{"kind":"gate","step":"ship","requestedAt":%d}' % now,
+                                "state_json": '{"gate":{"status":"pending","step":"ship"}}',
+                                "created_at": now, "updated_at": now})
+        print("phase 5: f3 wartet am Plugin-Gate vor ship (rev 4)")
+    elif phase == 6:
+        d.execute("update flow_runs set revision=5, status='running', current_step='ship', wait_json=null, "
+                  "state_json='{\"gate\":{\"status\":\"allowed\",\"decision\":\"allow\",\"by\":\"leo\"}}', updated_at=? where flow_id='f3'", (now,))
+        print("phase 6: f3 Gate freigegeben durch leo, ship läuft (rev 5)")
     d.commit(); d.close()

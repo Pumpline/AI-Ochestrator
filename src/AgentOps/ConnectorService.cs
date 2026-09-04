@@ -16,6 +16,7 @@ public sealed class FlowCursor
     public string? Step { get; set; }
     public string Status { get; set; } = "";
     public string? LastKey { get; set; }         // IdempotencyKey des letzten Events → CausationId des nächsten
+    public string? GateApprovalId { get; set; }  // offenes Plugin-Gate (waitJson.kind = "gate"), bis entschieden
 }
 
 public sealed class ApprovalCursor
@@ -84,7 +85,42 @@ public static class OpenClawConnector
             n++;
         }
 
-        // 2) Statuswechsel, soweit der Katalog ihn kennt
+        // 2) Plugin-Gate (agentops-pipeline): waiting mit waitJson.kind = "gate" öffnet es,
+        //    das Verlassen von waiting mit stateJson.gate.decision schließt es — mit dem Freigebenden aus gate.by.
+        var gateStream = Streams.Approval(f.FlowId);
+        if (f.Status == "waiting" && cursor.Status != "waiting" && cursor.GateApprovalId is null
+            && TryReadGate(f.WaitJson, out var gateStep))
+        {
+            var approvalId = $"gate:{f.FlowId}:{gateStep}";
+            var key = $"{approvalId}:pending";
+            s.Events.Append(gateStream, new GatePending(f.FlowId, approvalId, gateStep, Meta(cursor.LastKey, key, at)));
+            cursor.GateApprovalId = approvalId;
+            cursor.LastKey = key;
+            n++;
+        }
+        else if (cursor.GateApprovalId is { } openGate && f.Status != "waiting")
+        {
+            var (decision, by) = ReadGateDecision(f.StateJson);
+            var actor = string.IsNullOrWhiteSpace(by) ? "operator" : by;
+            if (decision == "allow")
+            {
+                var key = $"{openGate}:granted";
+                s.Events.Append(gateStream, new ApprovalGranted(f.FlowId, openGate, actor, Meta(cursor.LastKey, key, at, "human", actor)));
+                cursor.LastKey = key;
+                n++;
+            }
+            else
+            {
+                var key = $"{openGate}:denied";
+                s.Events.Append(gateStream, new ApprovalDenied(f.FlowId, openGate, actor, decision is null ? f.Status : "gate denied",
+                    Meta(cursor.LastKey, key, at, "human", actor)));
+                cursor.LastKey = key;
+                n++;
+            }
+            cursor.GateApprovalId = null;
+        }
+
+        // 3) Statuswechsel, soweit der Katalog ihn kennt
         if (f.Status != cursor.Status)
         {
             if (HaltedStatuses.Contains(f.Status))
@@ -187,6 +223,40 @@ public static class OpenClawConnector
 
     private static EventMeta Meta(string? causation, string key, DateTimeOffset at, string actorType = "automation", string actorId = "openclaw") =>
         new(actorType, actorId, causation, key, at);
+
+    /// <summary>waitJson = {"kind":"gate","step":"ship",…} → true und der Schritt hinter dem Gate.</summary>
+    private static bool TryReadGate(string? waitJson, out string step)
+    {
+        step = "";
+        if (string.IsNullOrWhiteSpace(waitJson)) return false;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(waitJson);
+            var r = doc.RootElement;
+            if (r.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
+            if (!r.TryGetProperty("kind", out var kind) || kind.GetString() != "gate") return false;
+            step = r.TryGetProperty("step", out var st) && st.ValueKind == System.Text.Json.JsonValueKind.String ? st.GetString()! : "";
+            return true;
+        }
+        catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    /// <summary>stateJson.gate = {"decision":"allow"|"deny","by":"…"} nach der Entscheidung.</summary>
+    private static (string? decision, string? by) ReadGateDecision(string? stateJson)
+    {
+        if (string.IsNullOrWhiteSpace(stateJson)) return (null, null);
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(stateJson);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("gate", out var gate)
+                || gate.ValueKind != System.Text.Json.JsonValueKind.Object) return (null, null);
+            var decision = gate.TryGetProperty("decision", out var d) && d.ValueKind == System.Text.Json.JsonValueKind.String ? d.GetString() : null;
+            var by = gate.TryGetProperty("by", out var b) && b.ValueKind == System.Text.Json.JsonValueKind.String ? b.GetString() : null;
+            return (decision, by);
+        }
+        catch (System.Text.Json.JsonException) { return (null, null); }
+    }
 
     private static DateTimeOffset Ms(long? ms) =>
         ms is { } v ? DateTimeOffset.FromUnixTimeMilliseconds(v) : DateTimeOffset.UtcNow;
