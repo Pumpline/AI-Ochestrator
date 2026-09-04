@@ -222,11 +222,28 @@ noch nicht angefasst.
 ## Das Cockpit (Frontend)
 
 `src/AgentOps/wwwroot/` — eine statische Web-App (ES-Module, kein Framework, kein Build), ausgeliefert vom
-AgentOps-Container unter `http://srv1:5080/` (Tailnet; lokal `127.0.0.1:5080`). Beim ersten Öffnen fragt sie
-einmalig nach dem `API_TOKEN` und deinem Namen für Freigaben; beides bleibt im Browser (`localStorage`).
+AgentOps-Container unter `http://srv1:5080/` (Tailnet; lokal `127.0.0.1:5080`).
+
+**Design:** „Tactical Console", das Designsystem von Rust-Manager-Web (`design-tokens/` dort ist die Quelle):
+blaustichige Near-Blacks (`#05060b`, Karten `#0a0e17`, Haarlinien `#1b2334`), ein Akzent — elektrisches Indigo
+`#4b57dd`, Füllung `#1f288e` — und Grün/Amber/Rot ausschließlich als Status. IBM Plex Sans für Text, Chakra Petch
+in gesperrten Versalien für Überschriften und Panel-Titel, IBM Plex Mono für IDs, Zeiten und Zahlen. Sidebar mit
+Icon-Navigation, Kennzahl-Kacheln, Karten mit Kopfzeile, Tabellen mit Zeilen-Hover, Tabs mit Unterstrich, Toasts
+rechts unten. Nur dunkel.
+
+**Anmeldung über Discord** (Muster aus Rust-Manager-Web, `Auth.cs`): OAuth2 mit `scope=identify`, State-Cookie,
+Cookie-Session 14 Tage gleitend. Anmelden legt kein Konto an — nur Discord-IDs aus `DISCORD_ALLOWED_IDS` und
+`DISCORD_ROOT_ID` bekommen eine Session, alle anderen dieselbe Abweisung. Der Discord-Anzeigename ist danach der
+Name in Freigaben (`ApprovalGranted.actor_ref`). Einrichten: im Discord Developer Portal eine Application anlegen,
+unter OAuth2 die Redirect URI `http://srv1:5080/api/auth/discord/callback` eintragen, Client-ID und -Secret in die
+`.env` auf srv1 (Secret ohne History: `read -rsp "Secret: " S; echo "DISCORD_CLIENT_SECRET=$S" >> .env; unset S`),
+eigene Discord-User-ID als `DISCORD_ROOT_ID`, dann `docker compose --profile app --profile openclaw up -d agentops`.
+Solange nichts konfiguriert ist, bietet die Login-Seite den `API_TOKEN` an. Session-Schlüssel liegen in
+`AGENTOPS_DATA_DIR/keys`, sonst wären alle Anmeldungen nach jedem Neustart weg. Für Skripte gilt der Bearer-Token weiter.
 
 | Seite | Zeigt / tut |
 |---|---|
+| Dashboard | vier Kennzahlen (Flows, offene Freigaben, stehen geblieben, Kosten 7 Tage), letzte Flows, offene Freigaben |
 | Flows | alle Flows aus dem Read-Model mit **Stufenstreifen** (plan · code · test · review · gate · ship), Ziel und Repo aus dem Plugin, alle 10 s aktualisiert |
 | Flow | großer Streifen, Zeitleiste aus `/api/flows/{id}/events`; am Gate: **Freigeben** / **Ablehnen**; bei hängendem Schritt: „Schritt als beendet behandeln" |
 | Wartet auf dich | offene Gates, Zähler in der Leiste |

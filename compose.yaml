@@ -140,7 +140,16 @@ services:
       Prometheus__Url: http://prometheus:9090
       Repos__Root: /repos
       Souls__DefaultsDir: /souls-default
+      # Discord-Anmeldung fürs Cockpit. Leer = nur Bearer-Token (Login-Seite sagt das).
+      Auth__Discord__ClientId: ${DISCORD_CLIENT_ID:-}
+      Auth__Discord__ClientSecret: ${DISCORD_CLIENT_SECRET:-}
+      Auth__Discord__RedirectUri: ${DISCORD_REDIRECT_URI:-}
+      Auth__Discord__AllowedUserIds: ${DISCORD_ALLOWED_IDS:-}
+      Auth__Discord__RootUserId: ${DISCORD_ROOT_ID:-}
+      DataProtection__KeysDir: /keys
     volumes:
+      # Session-Schlüssel, sonst sind alle Anmeldungen nach jedem Neustart weg
+      - ${AGENTOPS_DATA_DIR:-./data}/keys:/keys
       # Cockpit: Projekte und ihre Souls (.agentops/souls/*.md), Commits als uid des Besitzers
       - ${OPENCLAW_REPOS_DIR:-./fixtures/openclaw-repos}:/repos
       # Die Default-Souls der Schritt-Agenten, nur zum Anzeigen

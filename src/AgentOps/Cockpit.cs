@@ -83,14 +83,14 @@ public static class Cockpit
         });
 
         // Operator-Eingriff, wenn ein Schritt hängt (das Plugin hat das Ende eines Laufs verpasst).
-        api.MapPost("/pipeline/flows/{id}/advance", async (PluginClient plugin, string id, GateBody body, CancellationToken ct) =>
-            await plugin.RelayAsync(HttpMethod.Post, $"/{Uri.EscapeDataString(id)}/advance", new { by = string.IsNullOrWhiteSpace(body.By) ? "cockpit" : body.By.Trim() }, ct));
+        api.MapPost("/pipeline/flows/{id}/advance", async (HttpContext ctx, PluginClient plugin, string id, GateBody body, CancellationToken ct) =>
+            await plugin.RelayAsync(HttpMethod.Post, $"/{Uri.EscapeDataString(id)}/advance", new { by = Auth.ActorName(ctx, body.By) }, ct));
 
-        api.MapPost("/flows/{id}/gate", async (PluginClient plugin, string id, GateBody body, CancellationToken ct) =>
+        // Wer entscheidet, steht in der Session (Discord-Anzeigename); nur ohne Session zählt der übergebene Name.
+        api.MapPost("/flows/{id}/gate", async (HttpContext ctx, PluginClient plugin, string id, GateBody body, CancellationToken ct) =>
         {
             if (body.Decision is not ("allow" or "deny")) return Results.BadRequest(new { error = "decision: allow | deny" });
-            var by = string.IsNullOrWhiteSpace(body.By) ? "cockpit" : body.By.Trim();
-            return await plugin.RelayAsync(HttpMethod.Post, $"/{Uri.EscapeDataString(id)}/gate", new { decision = body.Decision, by }, ct);
+            return await plugin.RelayAsync(HttpMethod.Post, $"/{Uri.EscapeDataString(id)}/gate", new { decision = body.Decision, by = Auth.ActorName(ctx, body.By) }, ct);
         });
 
         api.MapGet("/costs", async (CostsClient costs, CancellationToken ct) => Results.Ok(await costs.SummaryAsync(ct)));

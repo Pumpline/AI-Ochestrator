@@ -33,6 +33,7 @@ builder.Services.AddMarten(opts =>
 builder.Services.AddHostedService<ConnectorService>();
 builder.Services.AddHttpClient<PluginClient>(c => c.Timeout = TimeSpan.FromSeconds(60));
 builder.Services.AddHttpClient<CostsClient>(c => c.Timeout = TimeSpan.FromSeconds(10));
+builder.AddCockpitAuth();   // Discord-Session als Cookie (Auth.cs)
 
 var app = builder.Build();
 var store = app.Services.GetRequiredService<IDocumentStore>();
@@ -87,12 +88,19 @@ if (args.Contains("--check"))
     return 0;
 }
 
-// /health offen (genau ein Bit, Blueprint §6), /api/* hinter Bearer-Token (P2). Siehe Api.cs.
+app.UseAuthentication();
+
+// /health offen (genau ein Bit, Blueprint §6), /api/* hinter Session oder Bearer-Token (P2). Siehe Api.cs.
+Auth.Map(app);
 Api.Map(app);
 
 // Das Cockpit-Frontend: statische Dateien aus wwwroot, alles andere fällt auf index.html zurück.
 app.UseDefaultFiles();
-app.UseStaticFiles();
+app.UseStaticFiles(new StaticFileOptions
+{
+    // Nach einem Deploy soll der Browser nicht auf alten Skripten sitzen: immer nachfragen (ETag/304 bleibt billig).
+    OnPrepareResponse = ctx => ctx.Context.Response.Headers.CacheControl = "no-cache",
+});
 app.MapFallbackToFile("index.html");
 
 app.Run();

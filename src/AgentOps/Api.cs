@@ -58,6 +58,9 @@ public static class Api
 
     private static async ValueTask<object?> RequireBearer(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)
     {
+        // Eine Discord-Session (Cookie) reicht — der Bearer-Token bleibt für Skripte und curl.
+        if (ctx.HttpContext.User.Identity?.IsAuthenticated == true) return await next(ctx);
+
         var expected = ctx.HttpContext.RequestServices.GetRequiredService<IConfiguration>()["Api:Token"];
         if (string.IsNullOrEmpty(expected))
             return Results.Problem("API ist aus: Api:Token nicht gesetzt.", statusCode: StatusCodes.Status503ServiceUnavailable);
