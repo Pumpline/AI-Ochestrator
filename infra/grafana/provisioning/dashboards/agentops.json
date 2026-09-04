@@ -92,11 +92,12 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "Kosten 7 Tage (USD)",
+      "title": "Kosten seit Gateway-Start (USD)",
+      "description": "Kumulierter Zähler; springt bei Neustart des Gateways auf 0. increase() verliert den ersten Sprung einer neuen Serie — deshalb hier die Summe, daneben die Tagesdeltas.",
       "gridPos": { "x": 0, "y": 14, "w": 6, "h": 5 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "sum(increase(openclaw_cost_usd_total[7d]))", "legendFormat": "USD" }
+        { "refId": "A", "expr": "sum(openclaw_cost_usd_total)", "legendFormat": "USD" }
       ],
       "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "area", "textMode": "value" }
