@@ -91,7 +91,8 @@ services:
   # Konfig-Vorlage: infra/openclaw/openclaw.json → einmalig nach $OPENCLAW_HOME_DIR kopieren (README).
   openclaw:
     profiles: ["openclaw"]
-    image: ghcr.io/openclaw/openclaw:latest
+    # Festgenagelt (§14: Tabellen- und Feldnamen in flow_runs hängen an der Version). Heben = bewusst.
+    image: ghcr.io/openclaw/openclaw:2026.9.1
     container_name: agentops-openclaw
     restart: unless-stopped
     user: "${AGENTOPS_UID:-1000}:${AGENTOPS_GID:-1000}"

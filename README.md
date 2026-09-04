@@ -127,7 +127,12 @@ Flows nach Status, Kosten pro Modell aus Prometheus (leer, bis ein Orchestrator 
 ## OpenClaw (Ebene 1) auf srv1
 
 Entscheidung 2026-09-05: OpenClaw bleibt der Orchestrator — als **Container** aus dem offiziellen Image
-(`ghcr.io/openclaw/openclaw`), Profil `openclaw` in derselben `compose.yaml`. Das Image läuft als uid 1000,
+(`ghcr.io/openclaw/openclaw`, festgenagelt auf **2026.9.1**, State-Schema 15), Profil `openclaw` in derselben `compose.yaml`.
+Läuft seit 2026-09-04 auf srv1; die OTel-Kette steht end-to-end (Prometheus hat `openclaw_*`-Metriken).
+Die für den Connector relevanten Tabellen der State-Datei: `flow_runs` (`flow_id`, `revision`, `status`,
+`current_step`, `state_json`, `wait_json`, `blocked_summary`, Zeiten als Epoch-ms), `operator_approvals`
+(`approval_id`, `status`, `decision`, `resolver_kind`, `resolver_id`, `resolved_at_ms`), `task_runs` (`parent_flow_id`,
+`agent_id`, `status`, `terminal_outcome`, `error`). CLI im Container: `docker compose --profile openclaw run --rm openclaw node openclaw.mjs <befehl>`. Das Image läuft als uid 1000,
 auf srv1 ist das `admin`: Bind-Mounts brauchen kein sudo, und der Connector (ebenfalls 1000) liest die SQLite direkt.
 Gateway und Connector reden über das Compose-Netz (`ws://openclaw:18789`), nach außen nur `127.0.0.1:18789`.
 

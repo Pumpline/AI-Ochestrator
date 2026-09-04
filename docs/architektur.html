@@ -881,8 +881,9 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
 <b>select</b> md5(string_agg(f::text, '|' <b>order by</b> f.flow_id))
 <b>from</b> flows f;</pre>
   <div class="note">
-    <p class="note-k">Vor Tag 2 klären</p>
-    <p>Die OpenClaw-Version festnageln, weil Tabellen- und Feldnamen in <code>flow_runs</code> sich zwischen Versionen ändern können. Einen Beispiel-Flow mit den fünf Schrittnamen anlegen, damit der JSON-Zustand so aussieht wie später im Betrieb. Und einmal ein Approval auslösen und das WebSocket-Event mitschneiden — ob es den Freigebenden nennt, entscheidet, ob <code>actor_ref</code> in §9 ein Feld oder nur ein Verweis wird.</p>
+    <p class="note-k">Vor Tag 2 klären — geklärt am 5. September 2026</p>
+    <p><strong>Version:</strong> OpenClaw 2026.9.1, Schema-Version 15 der State-Datei. <strong><code>flow_runs</code></strong> hat genau die Spalten, die der Connector braucht: <code>flow_id</code>, <code>revision</code>, <code>status</code>, <code>current_step</code>, <code>state_json</code>, <code>wait_json</code>, <code>blocked_summary</code>, <code>created_at</code>/<code>updated_at</code>/<code>ended_at</code>. Der Schritt steht also als eigene Spalte da, nicht nur im JSON.</p>
+    <p><strong>Approvals liegen ebenfalls in der Datei</strong> (<code>operator_approvals</code>: <code>approval_id</code>, <code>status</code>, <code>decision</code>, <code>resolver_kind</code>, <code>resolver_id</code>, <code>resolved_at_ms</code>, <code>source_run_id</code>) — der WebSocket ist damit wirklich nur Beschleuniger, und die Frage nach dem Freigebenden ist beantwortet: <code>resolver_id</code> ist ein Feld, <code>actor_ref</code> in §9 bleibt eines. Offen bleibt nur der Beispiel-Flow mit den fünf Schrittnamen; der kommt mit dem ersten echten Workflow.</p>
   </div>
 </section>
 
