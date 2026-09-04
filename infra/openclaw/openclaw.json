@@ -29,6 +29,9 @@
     "enabled": true,
     "otel": {
       "enabled": true,
+      "metrics": true,
+      "traces": true,
+      "flushIntervalMs": 5000,
       "endpoint": "http://otel-collector:4318",
       "protocol": "http/protobuf",
       "serviceName": "openclaw-gateway"

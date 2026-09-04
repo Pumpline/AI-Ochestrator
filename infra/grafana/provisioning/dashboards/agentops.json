@@ -73,14 +73,14 @@
       "id": 4,
       "type": "timeseries",
       "title": "Kosten pro Modell (USD, je Tag)",
-      "description": "openclaw.cost.usd aus dem OTel-Exporter, über Prometheus. Leer, bis ein Orchestrator exportiert.",
+      "description": "openclaw.cost.usd aus dem OTel-Exporter (diagnostics.otel.metrics muss an sein), über Prometheus als openclaw_cost_usd_total.",
       "gridPos": { "x": 8, "y": 8, "w": 16, "h": 6 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (model) (increase({__name__=~\"openclaw_cost_usd(_total)?\"}[1d]))",
-          "legendFormat": "{{model}}"
+          "expr": "sum by (openclaw_model) (increase(openclaw_cost_usd_total[1d]))",
+          "legendFormat": "{{openclaw_model}}"
         }
       ],
       "fieldConfig": {
@@ -90,10 +90,35 @@
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
     },
     {
+      "id": 6,
+      "type": "stat",
+      "title": "Kosten 7 Tage (USD)",
+      "gridPos": { "x": 0, "y": 14, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum(increase(openclaw_cost_usd_total[7d]))", "legendFormat": "USD" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "area", "textMode": "value" }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Tokens pro Turn-Art (7 Tage)",
+      "description": "prompt = gesamter Kontext je Aufruf. Ein Agent mit 50k Kontext kostet pro Turn, was ein kleiner Agent am Tag kostet (§1).",
+      "gridPos": { "x": 6, "y": 14, "w": 18, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (openclaw_token) (increase(openclaw_tokens_total[1d]))", "legendFormat": "{{openclaw_token}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "bars", "fillOpacity": 60 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
       "id": 5,
       "type": "table",
       "title": "Alle Flows",
-      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 9 },
+      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 9 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "agentops-pg" },
       "targets": [
         {

@@ -197,6 +197,12 @@ Im laufenden Container ändert man die Konfig mit `node openclaw.mjs config set 
 OpenClaw selbst umgeschrieben, nicht aus der Vorlage überschreiben. Erster Agent-Turn über das Gateway
 (`node openclaw.mjs agent -m "…" --json`) bestanden am 2026-09-04: runner `embedded`, Modell `gpt-5.6-sol`.
 
+**Kosten-Metriken** kommen erst mit `diagnostics.otel.metrics: true` (die Vorlage setzt es; `enabled` allein reicht
+nicht). In Prometheus: `openclaw_tokens_total{openclaw_token=input|output|prompt|cache_read|cache_write|total,
+openclaw_provider, openclaw_model, openclaw_agent}` und `openclaw_cost_usd_total{openclaw_provider, openclaw_model}`,
+dazu `gen_ai_client_token_usage_*`. Erste Messung: ein Turn „Antworte mit OK" = 53k Prompt-Tokens, 10 Output-Tokens,
+**0,18 USD** — der Kontext des Default-Agenten (Skills, Speicher) ist die Kostenstelle, nicht die Antwort (§1).
+
 ## Server: srv1
 
 Debian 13, 4 vCPU, 31 GB RAM, Docker 29 / Compose v5, erreichbar nur über Tailscale
