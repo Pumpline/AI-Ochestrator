@@ -99,7 +99,9 @@ AGENTOPS_DB=agentops_dev docker compose --profile app run --rm --no-deps agentop
 
 `</dev/null`, weil `compose run` in Skripten sonst das restliche Skript als Stdin des Containers liest.
 Die Dev-Datenbank gehört einer eigenen Rolle `agentops_dev` — lokale Entwicklung kommt damit nicht an den echten Log.
-Neu anlegen: `create role agentops_dev login password '…'; create database agentops_dev owner agentops_dev;`
+Neu anlegen: `create role agentops_dev login password '…'; create database agentops_dev owner agentops_dev; grant agentops_dev to agentops;`
+Der letzte Grant lässt den Container (Rolle `agentops`) dieselbe Dev-Datenbank benutzen — in die andere Richtung
+gibt es keinen Grant, `agentops_dev` kommt nicht an `agentops`.
 **Nie `reassign owned by`** zum Umhängen benutzen — das reicht Datenbanken als Shared Objects gleich mit weiter.
 
 ## Server: srv1
