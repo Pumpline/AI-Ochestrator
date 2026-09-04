@@ -18,3 +18,8 @@ fixtures/openclaw-state/
 fixtures/*.sqlite
 fixtures/*.sqlite-wal
 fixtures/*.sqlite-shm
+
+# OpenClaw-Daten auf dem Server (Konfig, State, Workspace) und lokale Platzhalter — nie versionieren
+openclaw/
+fixtures/openclaw-home/
+fixtures/openclaw-repos/
