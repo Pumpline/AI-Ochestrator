@@ -99,6 +99,8 @@ services:
     environment:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?OPENCLAW_GATEWAY_TOKEN fehlt in .env}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Provider-Schlüssel nur als Env, nie in openclaw.json. Leer = Gateway läuft, kann aber keine Agenten starten.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     volumes:
       # Konfig, State (state/openclaw.sqlite — das liest der Connector), Workspace
       - ${OPENCLAW_HOME_DIR:-./fixtures/openclaw-home}:/home/node/.openclaw
