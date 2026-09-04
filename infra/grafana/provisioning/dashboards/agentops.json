@@ -97,7 +97,7 @@
       "gridPos": { "x": 0, "y": 14, "w": 6, "h": 5 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
-        { "refId": "A", "expr": "sum(openclaw_cost_usd_total)", "legendFormat": "USD" }
+        { "refId": "A", "expr": "sum(last_over_time(openclaw_cost_usd_total[24h]))", "legendFormat": "USD" }
       ],
       "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 }, "overrides": [] },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "none", "graphMode": "area", "textMode": "value" }

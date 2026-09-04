@@ -20,6 +20,9 @@ exporters:
     # service.name usw. werden Labels — sonst sind alle OpenClaw-Metriken ohne Herkunft
     resource_to_telemetry_conversion:
       enabled: true
+    # Default 5m: Zähler ohne neue Werte verschwinden aus /metrics, und mit ihnen die Kosten „seit Start".
+    # Ein Gateway, das eine Stunde nichts tut, soll seine Zähler behalten.
+    metric_expiration: 72h
   debug:
     verbosity: basic
 

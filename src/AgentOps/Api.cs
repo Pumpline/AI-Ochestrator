@@ -51,6 +51,9 @@ public static class Api
         // "Welche Flows warten gerade auf mich?"
         api.MapGet("/gates", async (IQuerySession s, CancellationToken ct) =>
             Results.Ok(await s.Query<FlowView>().Where(f => f.GateOpen).OrderBy(f => f.UpdatedAt).ToListAsync(ct)));
+
+        // Cockpit: Projekte, Souls, Pipeline-Relais, Kosten (Cockpit.cs)
+        Cockpit.Map(api, app.Configuration);
     }
 
     private static async ValueTask<object?> RequireBearer(EndpointFilterInvocationContext ctx, EndpointFilterDelegate next)

@@ -137,7 +137,14 @@ services:
       OpenClaw__GatewayUrl: ws://openclaw:18789
       OpenClaw__GatewayToken: ${OPENCLAW_GATEWAY_TOKEN:-}
       OpenClaw__PollSeconds: "5"
+      Prometheus__Url: http://prometheus:9090
+      Repos__Root: /repos
+      Souls__DefaultsDir: /souls-default
     volumes:
+      # Cockpit: Projekte und ihre Souls (.agentops/souls/*.md), Commits als uid des Besitzers
+      - ${OPENCLAW_REPOS_DIR:-./fixtures/openclaw-repos}:/repos
+      # Die Default-Souls der Schritt-Agenten, nur zum Anzeigen
+      - ${OPENCLAW_HOME_DIR:-./fixtures/openclaw-home}/souls:/souls-default:ro
       # OpenClaws State-Verzeichnis. Bewusst nicht :ro — SQLite im WAL-Modus braucht auch zum Lesen
       # Schreibzugriff auf die -shm-Datei. Die Read-only-Garantie liegt auf der Verbindung (Mode=ReadOnly).
       # Default zeigt auf einen leeren lokalen Ordner, damit `docker compose up` ohne Profil nicht an
@@ -149,7 +156,8 @@ services:
       # Gateway läuft auf dem Host (oder als eigener Compose-Dienst — dann hier dessen Namen eintragen)
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:5080:8080"
+      # Cockpit-UI + API. Lokal 127.0.0.1, auf srv1 BIND_ADDR (Tailscale) wie Grafana. /api verlangt den Token.
+      - "${BIND_ADDR:-127.0.0.1}:5080:8080"
     depends_on:
       postgres:
         condition: service_healthy

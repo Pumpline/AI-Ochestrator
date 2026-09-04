@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent-Ops</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="shell">
+    <nav class="rail" aria-label="Bereiche">
+      <a class="brand" href="#/flows">Agent-Ops</a>
+      <a class="nav" data-route="flows" href="#/flows">Flows</a>
+      <a class="nav" data-route="gates" href="#/gates">Wartet auf dich <span class="count" id="gate-count" hidden>0</span></a>
+      <a class="nav" data-route="costs" href="#/costs">Kosten</a>
+      <div class="rail-section">Projekte</div>
+      <div id="rail-projects" class="rail-projects"></div>
+      <div class="rail-foot">
+        <button class="linkish" id="btn-token" type="button">Token ändern</button>
+      </div>
+    </nav>
+    <main id="main" class="main" tabindex="-1"></main>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

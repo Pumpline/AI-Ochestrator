@@ -31,6 +31,8 @@ builder.Services.AddMarten(opts =>
 .AddAsyncDaemon(DaemonMode.HotCold);   // genau ein Knoten projiziert, Advisory Lock — der Single-Writer aus Abb. 4
 
 builder.Services.AddHostedService<ConnectorService>();
+builder.Services.AddHttpClient<PluginClient>(c => c.Timeout = TimeSpan.FromSeconds(60));
+builder.Services.AddHttpClient<CostsClient>(c => c.Timeout = TimeSpan.FromSeconds(10));
 
 var app = builder.Build();
 var store = app.Services.GetRequiredService<IDocumentStore>();
@@ -87,6 +89,11 @@ if (args.Contains("--check"))
 
 // /health offen (genau ein Bit, Blueprint §6), /api/* hinter Bearer-Token (P2). Siehe Api.cs.
 Api.Map(app);
+
+// Das Cockpit-Frontend: statische Dateien aus wwwroot, alles andere fällt auf index.html zurück.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.MapFallbackToFile("index.html");
 
 app.Run();
 return 0;

@@ -219,6 +219,30 @@ Teurer als Lauf #1 (0,60 USD): jeder Agent-Workspace bringt eigenen Bootstrap-Ko
 Prompt-Tokens je Schritt 90k–195k über mehrere Modellaufrufe — der Hebel ist die Tool-Liste je Agent (`agents.entries.<id>.tools`),
 noch nicht angefasst.
 
+## Das Cockpit (Frontend)
+
+`src/AgentOps/wwwroot/` — eine statische Web-App (ES-Module, kein Framework, kein Build), ausgeliefert vom
+AgentOps-Container unter `http://srv1:5080/` (Tailnet; lokal `127.0.0.1:5080`). Beim ersten Öffnen fragt sie
+einmalig nach dem `API_TOKEN` und deinem Namen für Freigaben; beides bleibt im Browser (`localStorage`).
+
+| Seite | Zeigt / tut |
+|---|---|
+| Flows | alle Flows aus dem Read-Model mit **Stufenstreifen** (plan · code · test · review · gate · ship), Ziel und Repo aus dem Plugin, alle 10 s aktualisiert |
+| Flow | großer Streifen, Zeitleiste aus `/api/flows/{id}/events`; am Gate: **Freigeben** / **Ablehnen**; bei hängendem Schritt: „Schritt als beendet behandeln" |
+| Wartet auf dich | offene Gates, Zähler in der Leiste |
+| Projekt | **Pipeline starten** (Ziel eingeben), letzte Läufe, **Souls je Schritt** — Standard des Agenten oder Projekt-Override, „Soul speichern" committet `.agentops/souls/<schritt>.md` ins Repo |
+| Kosten | Kosten je Soul (7 Tage / seit Gateway-Start), Tokens nach Art — aus Prometheus |
+
+Die Schreibseite des Cockpits sind genau drei Verben, alle in `Cockpit.cs`: Gate entscheiden und Pipeline
+starten (Relais zum Plugin am Gateway — der Gateway-Token bleibt im Container), Soul speichern (Datei + Commit als
+„AgentOps Cockpit"). Alles andere liest. Neue Endpunkte: `/api/projects`, `/api/projects/{name}/souls[/{step}]`
+(GET/PUT/DELETE), `/api/projects/{name}/runs` (POST), `/api/flows/{id}/gate` (POST), `/api/pipeline/flows[/{id}]`,
+`/api/pipeline/flows/{id}/advance` (POST), `/api/costs`. Der Container mountet dafür `/repos` (rw, Commits) und
+`/souls-default` (ro) und hat `git`.
+
+Prometheus-Detail: der Collector ließ Metriken ohne neue Werte nach 5 Minuten verfallen — nach einem ruhigen
+Gateway waren die Kosten „seit Start" weg. Jetzt `metric_expiration: 72h`, und die Abfragen nutzen `last_over_time(…[24h])`.
+
 ## Read-API (P2) und Grafana-Board (P3)
 
 Die API liest nur. `/health` ist offen und sagt genau ein Bit; alles unter `/api` verlangt
