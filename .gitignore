@@ -23,3 +23,6 @@ fixtures/*.sqlite-shm
 openclaw/
 fixtures/openclaw-home/
 fixtures/openclaw-repos/
+
+# Cockpit-Daten (Session-Schlüssel)
+data/
