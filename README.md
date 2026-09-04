@@ -187,9 +187,15 @@ curl -s http://127.0.0.1:18789/healthz
 Danach `--profile app` neu starten, damit der Connector den neuen State-Pfad und das Token bekommt:
 `docker compose --profile app --profile openclaw up -d`.
 
-Provider-Schlüssel (Anthropic o.ä.) kommen als Env in den OpenClaw-Container, nie in die Konfig-Datei —
-Zeile in `.env`, Eintrag unter `environment:` des Dienstes. Welche Variable das Image erwartet, steht in der
-OpenClaw-Doku zum jeweiligen Provider.
+Provider-Schlüssel kommen als Env in den OpenClaw-Container, nie in die Konfig-Datei: `OPENAI_API_KEY` in `.env`
+(Eintrag ohne History: `read -rsp "Key: " K; echo "OPENAI_API_KEY=$K" >> .env; unset K`), `compose.yaml` reicht ihn durch.
+
+**Runtime-Policy:** OpenAI-Modelle laufen in OpenClaw standardmäßig über den *Codex*-Harness, dessen Binary im
+Image fehlt („Managed Codex app-server binary was not found"). Die Vorlage pinnt das Default-Modell deshalb auf
+OpenClaws eingebetteten Runtime (`agents.defaults.models["openai/gpt-5.6-sol"].agentRuntime.id = "openclaw"`).
+Im laufenden Container ändert man die Konfig mit `node openclaw.mjs config set <pfad> <json>` — die Datei wird von
+OpenClaw selbst umgeschrieben, nicht aus der Vorlage überschreiben. Erster Agent-Turn über das Gateway
+(`node openclaw.mjs agent -m "…" --json`) bestanden am 2026-09-04: runner `embedded`, Modell `gpt-5.6-sol`.
 
 ## Server: srv1
 

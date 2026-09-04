@@ -9,7 +9,14 @@
   },
   "agents": {
     "defaults": {
-      "workspace": "~/.openclaw/workspace"
+      "workspace": "~/.openclaw/workspace",
+      "model": "openai/gpt-5.6-sol",
+      "models": {
+        "openai/gpt-5.6-sol": {
+          "agentRuntime": { "id": "openclaw" },
+          "params": { "transport": "auto" }
+        }
+      }
     }
   },
   "plugins": {
