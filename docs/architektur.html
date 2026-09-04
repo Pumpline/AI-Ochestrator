@@ -868,12 +868,12 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
     </div>
     <div class="ph">
       <div class="ph-n">4</div>
-      <div><p class="ph-t">Fixture-Durchstich</p><p class="ph-d"><code>fixtures/day1.jsonl</code> mit rund zwanzig Events aus dem Katalog: drei Flows — einer läuft bis <code>ship</code>, einer steht in <code>waiting</code> mit offenem <code>GatePending</code>, einer endet in <code>Halted</code>. Ein kleiner Loader hängt sie als Events an (<code>--load</code>, idempotent pro Stream). Danach: <code>flows</code> ansehen, Prüfsumme ziehen, <code>--rebuild</code> (leert und spielt neu ab), Prüfsumme erneut ziehen.</p></div>
+      <div><p class="ph-t">Fixture-Durchstich</p><p class="ph-d"><code>fixtures/day1.jsonl</code> mit rund zwanzig Events aus dem Katalog: drei Flows — einer läuft bis <code>ship</code>, einer steht in <code>waiting</code> mit offenem <code>GatePending</code>, einer endet in <code>Halted</code>. Ein kleiner Loader hängt sie als Events an (<code>--load</code>, idempotent pro Stream). Danach: <code>flows</code> ansehen, Prüfsumme ziehen, <code>--rebuild</code> (leert und spielt neu ab), Prüfsumme erneut ziehen. Als ein Kommando: <code>--verify</code> — macht genau diese Folge, plus einen zweiten Load als Idempotenz-Probe, und beendet sich mit Exit 1, wenn etwas abweicht.</p></div>
       <div class="ph-c">Rest des Tages</div>
     </div>
     <div class="ph">
       <div class="ph-n">5</div>
-      <div><p class="ph-t">Stopp-Kriterium</p><p class="ph-d">Tag 1 ist fertig, wenn die Prüfsumme zweimal gleich ist. Nicht vorher Grafana, nicht vorher der Connector, nicht vorher OpenClaw. Wenn sie ungleich ist, ist das Event-Modell unehrlich — dann ist genau das der Fund des Tages, und er ist billig, weil noch nichts darauf aufbaut.</p></div>
+      <div><p class="ph-t">Stopp-Kriterium</p><p class="ph-d">Tag 1 ist fertig, wenn die Prüfsumme zweimal gleich ist — <code>--verify</code> liefert Exit 0. Nicht vorher Grafana, nicht vorher der Connector, nicht vorher OpenClaw. Wenn sie ungleich ist, ist das Event-Modell unehrlich — dann ist genau das der Fund des Tages, und er ist billig, weil noch nichts darauf aufbaut. <em>Bestanden am 4. September 2026, lokal und im Container auf srv1, mit derselben Prüfsumme.</em></p></div>
       <div class="ph-c">—</div>
     </div>
   </div>

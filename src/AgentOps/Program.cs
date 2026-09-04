@@ -38,28 +38,40 @@ var ct = app.Lifetime.ApplicationStopping;
 
 await ReadModelSchema.EnsureAsync(store, ct);
 
-// --load [datei]: Fixture anhängen und einmal durch den Daemon projizieren, dann beenden.
-if (args.Contains("--load"))
+// Kommandos (§14): jedes läuft einmal durch und beendet den Prozess. Ohne Kommando startet der Dienst.
+string ArgAfter(string flag, string fallback)
 {
-    var i = Array.IndexOf(args, "--load");
-    var path = i + 1 < args.Length && !args[i + 1].StartsWith("--") ? args[i + 1] : "fixtures/day1.jsonl";
-    await FixtureLoader.LoadAsync(store, path, app.Logger, ct);
-
-    using var daemon = await store.BuildProjectionDaemonAsync();
-    await daemon.StartAllAsync();
-    await daemon.WaitForNonStaleData(TimeSpan.FromSeconds(30));
-    await daemon.StopAllAsync();
-    app.Logger.LogInformation("Projektion {Name} ist auf Stand", FlowViewProjection.Key);
-    return;
+    var i = Array.IndexOf(args, flag);
+    return i >= 0 && i + 1 < args.Length && !args[i + 1].StartsWith("--") ? args[i + 1] : fallback;
 }
 
-// --rebuild: Read-Model leeren, Cursor auf 0, Log neu abspielen (Abb. 4). Danach beenden.
+// --verify [datei]: Schritt 4 + 5 in einem — Load, Projektion, Prüfsumme, Rebuild, Prüfsumme, zweiter Load. Exit 1 bei Abweichung.
+if (args.Contains("--verify"))
+    return await Day1Check.VerifyAsync(store, ArgAfter("--verify", "fixtures/day1.jsonl"), app.Logger, ct) ? 0 : 1;
+
+// --load [datei]: Fixture anhängen und einmal durch den Daemon projizieren.
+if (args.Contains("--load"))
+{
+    await FixtureLoader.LoadAsync(store, ArgAfter("--load", "fixtures/day1.jsonl"), app.Logger, ct);
+    await Day1Check.ProjectOnceAsync(store);
+    app.Logger.LogInformation("Projektion {Name} ist auf Stand", FlowViewProjection.Key);
+    return 0;
+}
+
+// --rebuild: Read-Model leeren, Cursor auf 0, Log neu abspielen (Abb. 4).
 if (args.Contains("--rebuild"))
 {
-    using var daemon = await store.BuildProjectionDaemonAsync();
-    await daemon.RebuildProjectionAsync(FlowViewProjection.Key, ct);
+    await Day1Check.RebuildAsync(store, ct);
     app.Logger.LogInformation("Rebuild {Name} abgeschlossen", FlowViewProjection.Key);
-    return;
+    return 0;
+}
+
+// --check: nur die Prüfsumme des Read-Models ausgeben.
+if (args.Contains("--check"))
+{
+    await Day1Check.PrintRowsAsync(store, app.Logger, ct);
+    app.Logger.LogInformation("Prüfsumme {Checksum}", await Day1Check.ChecksumAsync(store, ct));
+    return 0;
 }
 
 // Der einzige offene Endpunkt. Genau ein Bit (Blueprint §6).
@@ -69,3 +81,4 @@ app.MapGet("/health", () => Results.Text("ok"));
 app.MapGet("/flows", () => Results.StatusCode(StatusCodes.Status501NotImplemented));
 
 app.Run();
+return 0;

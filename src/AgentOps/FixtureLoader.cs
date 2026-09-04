@@ -13,6 +13,7 @@ public static class FixtureLoader
 {
     public static async Task<(int appended, int skipped)> LoadAsync(IDocumentStore store, string path, ILogger log, CancellationToken ct)
     {
+        path = Resolve(path);
         var appended = 0;
         var skipped = 0;
         var streamExisted = new Dictionary<string, bool>();
@@ -65,6 +66,23 @@ public static class FixtureLoader
 
         log.LogInformation("Fixture {Path}: {Appended} Events angehängt, {Skipped} übersprungen (Stream existierte schon)", path, appended, skipped);
         return (appended, skipped);
+    }
+
+    /// <summary>
+    /// Relative Pfade auch von src/AgentOps aus finden (dotnet run --project setzt das Arbeitsverzeichnis dorthin):
+    /// erst relativ zum CWD, dann bis zu vier Ebenen aufwärts — im Container liegt fixtures/ direkt unter /app.
+    /// </summary>
+    private static string Resolve(string path)
+    {
+        if (Path.IsPathRooted(path) || File.Exists(path)) return path;
+        var dir = Directory.GetCurrentDirectory();
+        for (var up = 0; up < 4 && dir is not null; up++)
+        {
+            var candidate = Path.Combine(dir, path);
+            if (File.Exists(candidate)) return candidate;
+            dir = Path.GetDirectoryName(dir);
+        }
+        throw new FileNotFoundException($"Fixture nicht gefunden: {path} (gesucht ab {Directory.GetCurrentDirectory()} aufwärts)", path);
     }
 
     private static string? Str(JsonElement o, string name) =>

@@ -52,11 +52,26 @@ SQL-Injection in der Volltextsuche — deshalb nicht darunter). SDK 10 nötig.
 Wo was liegt: Log `agentops.mt_events`, Read-Model `readmodel.mt_doc_flows` (Marten-Dokument),
 für Grafana und die Prüfsumme die View `readmodel.flows`. Beides legt die App beim Start an.
 
+Kommandos (jedes läuft einmal durch und beendet sich; ohne Kommando startet der Dienst):
+
+| Kommando | Tut |
+|---|---|
+| `--verify [datei]` | **Schritt 4 + 5 in einem:** Load, Projektion durch den Daemon, Prüfsumme, Rebuild, Prüfsumme, zweiter Load. Exit 1 bei Abweichung. |
+| `--load [datei]` | Fixture anhängen (idempotent pro Stream) und einmal projizieren |
+| `--rebuild` | Read-Model leeren, Cursor auf 0, Log neu abspielen |
+| `--check` | Read-Model und Prüfsumme ausgeben |
+
+Lokal gibt es keinen Docker — die Entwicklung läuft gegen die Wegwerf-Datenbank `agentops_dev` auf srv1,
+eigene Rolle `agentops_dev`, über einen SSH-Tunnel auf den Postgres-Container:
+
 ```bash
-dotnet user-secrets --project src/AgentOps set "ConnectionStrings:AgentOps" "Host=127.0.0.1;Database=agentops;Username=agentops;Password=..."
-dotnet run --project src/AgentOps -- --load fixtures/day1.jsonl   # anhängen + einmal projizieren
-dotnet run --project src/AgentOps -- --rebuild                     # Read-Model leeren, Log neu abspielen
+ssh -N -L 127.0.0.1:15432:$(ssh srv1 docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' agentops-postgres):5432 srv1 &
+dotnet user-secrets --project src/AgentOps set "ConnectionStrings:AgentOps" "Host=127.0.0.1;Port=15432;Database=agentops_dev;Username=agentops_dev;Password=..."
+ASPNETCORE_ENVIRONMENT=Development dotnet run --project src/AgentOps -- --verify fixtures/day1.jsonl
 ```
+
+`ASPNETCORE_ENVIRONMENT=Development` ist nötig, sonst liest die App die user-secrets nicht (kein launchSettings.json).
+Relative Fixture-Pfade werden auch von `src/AgentOps` aus gefunden — der Loader sucht bis zu vier Ebenen aufwärts.
 
 Erwartetes Read-Model nach dem Fixture:
 
@@ -66,24 +81,26 @@ Erwartetes Read-Model nach dem Fixture:
 | b2 | review | waiting | true | 4 |
 | c3 | test | failed | false | 4 |
 
-Prüfsumme ziehen, `--rebuild`, Prüfsumme erneut ziehen:
+Die Prüfsumme, die `--verify` vergleicht (falls du sie von Hand ziehen willst):
 
 ```sql
 select md5(string_agg(f::text, '|' order by f.flow_id)) from readmodel.flows f;
 ```
 
-Tag 1 ist fertig, wenn beide Werte gleich sind. Stand 2026-09-04 auf srv1 gegen `agentops_dev`:
-identisch (`49a4ac52…`), 21 Events in 5 Streams, zweiter `--load` hängt nichts an.
+**Tag 1 ist bestanden** — 2026-09-04 lokal (SDK 10 durch den Tunnel) und im Container auf srv1, beide gegen
+`agentops_dev`: 21 Events in 5 Streams, Prüfsumme vor und nach Rebuild identisch (`49a4ac52…`, auf beiden
+Wegen dieselbe), zweiter Load hängt nichts an.
 
-Auf dem Server dasselbe im Container, gegen eine Wegwerf-Datenbank statt des echten Logs:
+Auf dem Server dasselbe im Container, gegen die Wegwerf-Datenbank statt des echten Logs:
 
 ```bash
-AGENTOPS_DB=agentops_dev docker compose --profile app run --rm --no-deps agentops --load fixtures/day1.jsonl
-AGENTOPS_DB=agentops_dev docker compose --profile app run --rm --no-deps agentops --rebuild
+AGENTOPS_DB=agentops_dev docker compose --profile app run --rm --no-deps agentops --verify fixtures/day1.jsonl </dev/null
 ```
 
-(`agentops_dev` einmal anlegen: `docker exec agentops-postgres psql -U postgres -c "create database agentops_dev owner agentops"`.
-In Skripten `</dev/null` anhängen — `compose run` liest sonst das restliche Skript als Stdin des Containers.)
+`</dev/null`, weil `compose run` in Skripten sonst das restliche Skript als Stdin des Containers liest.
+Die Dev-Datenbank gehört einer eigenen Rolle `agentops_dev` — lokale Entwicklung kommt damit nicht an den echten Log.
+Neu anlegen: `create role agentops_dev login password '…'; create database agentops_dev owner agentops_dev;`
+**Nie `reassign owned by`** zum Umhängen benutzen — das reicht Datenbanken als Shared Objects gleich mit weiter.
 
 ## Server: srv1
 
