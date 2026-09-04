@@ -39,10 +39,24 @@ Rollen werden beim **ersten** Start angelegt — Passwörter später ändern hei
 
 ## Tag 1 (§14)
 
-1. `dotnet new sln -n AgentOps && dotnet sln add src/AgentOps` — Rider öffnet das csproj auch direkt.
-2. `dotnet add src/AgentOps package Marten`, Events als `record`s, Projektion `FlowView`
-   mit `DatabaseSchemaName("readmodel")` — sonst sieht `grafana_ro` sie nicht.
-3. Loader für `fixtures/day1.jsonl` schreiben, einspielen, Read-Model prüfen.
+Schritt 3 ist umgesetzt: **Marten 9.31.2 auf net10.0** (7.x und 8.x bis 8.36 tragen CVE-2026-45288,
+SQL-Injection in der Volltextsuche — deshalb nicht darunter). SDK 10 nötig.
+
+| Datei | Inhalt |
+|---|---|
+| `Events.cs` | die fünf Event-Typen aus §9 als `record`s plus `EventMeta` |
+| `ReadModel.cs` | `FlowView` + `FlowViewProjection` (multi-stream, async) + View `readmodel.flows` |
+| `FixtureLoader.cs` | `--load`: JSONL → Events, idempotent pro Stream |
+| `Program.cs` | `AddMarten` (Schema `agentops`, String-Stream-IDs, Correlation/Causation), Daemon `HotCold`, `--load`, `--rebuild` |
+
+Wo was liegt: Log `agentops.mt_events`, Read-Model `readmodel.mt_doc_flows` (Marten-Dokument),
+für Grafana und die Prüfsumme die View `readmodel.flows`. Beides legt die App beim Start an.
+
+```bash
+dotnet user-secrets --project src/AgentOps set "ConnectionStrings:AgentOps" "Host=127.0.0.1;Database=agentops;Username=agentops;Password=..."
+dotnet run --project src/AgentOps -- --load fixtures/day1.jsonl   # anhängen + einmal projizieren
+dotnet run --project src/AgentOps -- --rebuild                     # Read-Model leeren, Log neu abspielen
+```
 
 Erwartetes Read-Model nach dem Fixture:
 
@@ -52,13 +66,24 @@ Erwartetes Read-Model nach dem Fixture:
 | b2 | review | waiting | true | 4 |
 | c3 | test | failed | false | 4 |
 
-4. Prüfsumme ziehen, Read-Model leeren, `dotnet run -- --rebuild`, Prüfsumme erneut ziehen:
+Prüfsumme ziehen, `--rebuild`, Prüfsumme erneut ziehen:
 
 ```sql
 select md5(string_agg(f::text, '|' order by f.flow_id)) from readmodel.flows f;
 ```
 
-Tag 1 ist fertig, wenn beide Werte gleich sind. Kein Grafana, kein Connector, kein OpenClaw vorher.
+Tag 1 ist fertig, wenn beide Werte gleich sind. Stand 2026-09-04 auf srv1 gegen `agentops_dev`:
+identisch (`49a4ac52…`), 21 Events in 5 Streams, zweiter `--load` hängt nichts an.
+
+Auf dem Server dasselbe im Container, gegen eine Wegwerf-Datenbank statt des echten Logs:
+
+```bash
+AGENTOPS_DB=agentops_dev docker compose --profile app run --rm --no-deps agentops --load fixtures/day1.jsonl
+AGENTOPS_DB=agentops_dev docker compose --profile app run --rm --no-deps agentops --rebuild
+```
+
+(`agentops_dev` einmal anlegen: `docker exec agentops-postgres psql -U postgres -c "create database agentops_dev owner agentops"`.
+In Skripten `</dev/null` anhängen — `compose run` liest sonst das restliche Skript als Stdin des Containers.)
 
 ## Server: srv1
 

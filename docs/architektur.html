@@ -863,12 +863,12 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
     </div>
     <div class="ph">
       <div class="ph-n">3</div>
-      <div><p class="ph-t">Marten einbinden</p><p class="ph-d"><code>AddMarten</code> mit dem Connection String, die fünf Event-Typen aus §9 als <code>record</code>s, eine Projektion <code>FlowView</code> als asynchrone Projektion mit dem Read-Model <code>flows</code> (flow_id, stage, status, revision, gate_open, updated_at). Der Async-Daemon ist der Single-Writer aus Abb. 4 — Marten sichert ihn über Advisory Locks, du schreibst ihn nicht. Rebuild über <code>RebuildProjectionAsync</code> hinter einem <code>--rebuild</code>-Schalter.</p></div>
+      <div><p class="ph-t">Marten einbinden</p><p class="ph-d"><code>AddMarten</code> mit dem Connection String, die fünf Event-Typen aus §9 als <code>record</code>s, eine Projektion <code>FlowView</code> als asynchrone Multi-Stream-Projektion (task- und approval-Stream eines Flows landen im selben Dokument) mit der View <code>readmodel.flows</code> (flow_id, stage, status, revision, gate_open, updated_at). Der Async-Daemon ist der Single-Writer aus Abb. 4 — Marten sichert ihn über Advisory Locks, du schreibst ihn nicht. Rebuild über <code>RebuildProjectionAsync</code> hinter einem <code>--rebuild</code>-Schalter. Version: Marten 9 auf net10.0 — 7.x und 8.x bis 8.36 tragen eine SQL-Injection in der Volltextsuche (CVE-2026-45288).</p></div>
       <div class="ph-c">1 h</div>
     </div>
     <div class="ph">
       <div class="ph-n">4</div>
-      <div><p class="ph-t">Fixture-Durchstich</p><p class="ph-d"><code>fixtures/day1.jsonl</code> mit rund zwanzig Events aus dem Katalog: drei Flows — einer läuft bis <code>ship</code>, einer steht in <code>waiting</code> mit offenem <code>GatePending</code>, einer endet in <code>Halted</code>. Ein kleiner Loader hängt sie als Events an. Danach: <code>flows</code> ansehen, Prüfsumme ziehen, Read-Model leeren, <code>--rebuild</code>, Prüfsumme erneut ziehen.</p></div>
+      <div><p class="ph-t">Fixture-Durchstich</p><p class="ph-d"><code>fixtures/day1.jsonl</code> mit rund zwanzig Events aus dem Katalog: drei Flows — einer läuft bis <code>ship</code>, einer steht in <code>waiting</code> mit offenem <code>GatePending</code>, einer endet in <code>Halted</code>. Ein kleiner Loader hängt sie als Events an (<code>--load</code>, idempotent pro Stream). Danach: <code>flows</code> ansehen, Prüfsumme ziehen, <code>--rebuild</code> (leert und spielt neu ab), Prüfsumme erneut ziehen.</p></div>
       <div class="ph-c">Rest des Tages</div>
     </div>
     <div class="ph">

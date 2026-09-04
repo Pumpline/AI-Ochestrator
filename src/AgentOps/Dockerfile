@@ -1,12 +1,12 @@
 # Build-Kontext ist das Repo-Root (siehe compose.yaml), damit später weitere Projekte dazukommen können.
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY src/AgentOps/AgentOps.csproj AgentOps/
 RUN dotnet restore AgentOps/AgentOps.csproj
 COPY src/AgentOps/ AgentOps/
 RUN dotnet publish AgentOps/AgentOps.csproj -c Release -o /app --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /app .
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \

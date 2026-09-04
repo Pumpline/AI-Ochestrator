@@ -100,7 +100,8 @@ services:
     user: "${AGENTOPS_UID:-1654}:${AGENTOPS_GID:-1654}"
     environment:
       HOME: /tmp
-      ConnectionStrings__AgentOps: Host=postgres;Database=agentops;Username=agentops;Password=${AGENTOPS_PASSWORD}
+      # AGENTOPS_DB=agentops_dev für Fixture-Tests gegen eine Wegwerf-Datenbank, ohne den echten Log zu berühren
+      ConnectionStrings__AgentOps: Host=postgres;Database=${AGENTOPS_DB:-agentops};Username=agentops;Password=${AGENTOPS_PASSWORD}
       OpenClaw__StatePath: /openclaw/state/openclaw.sqlite
       OpenClaw__GatewayUrl: ws://host.docker.internal:18789
       OpenClaw__PollSeconds: "5"
@@ -110,6 +111,8 @@ services:
       # Default zeigt auf einen leeren lokalen Ordner, damit `docker compose up` ohne Profil nicht an
       # der Interpolation scheitert (Compose wertet ${..:?} vor den Profilen aus). Auf srv1 setzen.
       - ${OPENCLAW_STATE_DIR:-./fixtures/openclaw-state}:/openclaw/state
+      # Fixtures für --load (nicht im Image, .dockerignore)
+      - ./fixtures:/app/fixtures:ro
     extra_hosts:
       # Gateway läuft auf dem Host (oder als eigener Compose-Dienst — dann hier dessen Namen eintragen)
       - "host.docker.internal:host-gateway"
