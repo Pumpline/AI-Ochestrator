@@ -1,42 +1,231 @@
+using AgentOps.Events;
+using AgentOps.OpenClaw;
+using Marten;
+
 namespace AgentOps;
 
 /// <summary>
-/// Liest zwei Quellen und schreibt Events — sonst nichts (docs/architektur.html §10).
-///
-///  1. OpenClaws SQLite (~/.openclaw/state/openclaw.sqlite, Tabelle flow_runs), per Poll.
-///     Für jede neue Revision genau ein Event; idempotency_key = "{flow_id}:{revision}".
-///     Öffnen strikt lesend: Data Source=...;Mode=ReadOnly; plus Busy-Timeout.
-///     Läuft deshalb auf demselben Host wie OpenClaw. Im Container: State-Verzeichnis als Volume,
-///     NICHT :ro — WAL-Modus braucht auch zum Lesen Schreibzugriff auf die -shm-Datei.
-///     Die Read-only-Garantie ist die Verbindung, nicht das Dateisystem.
-///  2. Gateway per WebSocket: sessions.messages.subscribe mit includeApprovals
-///     (Scope operator.approvals). Nur Beschleuniger — fällt er aus, holt der nächste Poll nach.
-///
-/// Zustand: nur die zuletzt gesehene Revision pro Flow, und die steht schon im Log.
-/// Tag 1 läuft ohne diesen Dienst — der Projektor wird über fixtures/day1.jsonl getrieben.
+/// Cursor pro Flow: was der Connector zuletzt gesehen hat. Liegt als Marten-Dokument im Schema agentops und wird
+/// in derselben Transaktion wie die Events geschrieben — deshalb schreibt ein Neustart nichts doppelt.
+/// Wegwerfbar: aus dem Log rekonstruierbar (letztes Event je Flow), nur nicht automatisch.
 /// </summary>
-public sealed class ConnectorService(IConfiguration config, ILogger<ConnectorService> log) : BackgroundService
+public sealed class FlowCursor
+{
+    public string Id { get; set; } = default!;   // FlowId
+    public int Revision { get; set; }
+    public string? Step { get; set; }
+    public string Status { get; set; } = "";
+    public string? LastKey { get; set; }         // IdempotencyKey des letzten Events → CausationId des nächsten
+}
+
+public sealed class ApprovalCursor
+{
+    public string Id { get; set; } = default!;   // ApprovalId
+    public string Status { get; set; } = "";
+    public string? Decision { get; set; }
+    public string? FlowId { get; set; }
+    public string? LastKey { get; set; }
+}
+
+/// <summary>
+/// Liest OpenClaws State-Datei und schreibt Events — sonst nichts (§10). Ein Poll = ein Durchlauf über
+/// flow_runs und operator_approvals; pro Flow eine Session, damit Correlation/Causation stimmen.
+/// Der WebSocket als Beschleuniger für Freigaben ist bewusst noch nicht drin: die Datei hält auch die Approvals.
+/// </summary>
+public static class OpenClawConnector
+{
+    private static readonly HashSet<string> HaltedStatuses = ["failed", "lost", "blocked", "cancelled"];
+
+    public static async Task<int> PollOnceAsync(IDocumentStore store, string statePath, ILogger log, CancellationToken ct)
+    {
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await using var conn = OpenClawState.Open(statePath);
+        await conn.OpenAsync(ct);
+        var flows = await OpenClawState.ReadFlowsAsync(conn, nowMs, ct);
+        var approvals = await OpenClawState.ReadApprovalsAsync(conn, nowMs, ct);
+        await conn.CloseAsync();
+
+        // In der Reihenfolge, in der es in OpenClaw passiert ist — nicht Flows zuerst, dann Approvals.
+        // Innerhalb eines Poll-Intervalls kann beides liegen; bei gleicher Zeit zuerst die Freigabe,
+        // weil der nächste Schritt eines Flows die Folge der Entscheidung ist, nicht umgekehrt.
+        var work = new List<(long ts, int order, Func<Task<int>> run)>();
+        foreach (var a in approvals)
+            work.Add((a.ResolvedAtMs ?? a.UpdatedAtMs ?? a.CreatedAtMs ?? 0, 0, () => ProjectApprovalAsync(store, a, log, ct)));
+        foreach (var f in flows)
+            work.Add((f.UpdatedAt ?? f.CreatedAt ?? 0, 1, () => ProjectFlowAsync(store, f, log, ct)));
+
+        var emitted = 0;
+        foreach (var (_, _, run) in work.OrderBy(w => w.ts).ThenBy(w => w.order))
+            emitted += await run();
+        return emitted;
+    }
+
+    private static async Task<int> ProjectFlowAsync(IDocumentStore store, OpenClawState.FlowRow f, ILogger log, CancellationToken ct)
+    {
+        await using var s = store.LightweightSession();
+        var cursor = await s.LoadAsync<FlowCursor>(f.FlowId, ct) ?? new FlowCursor { Id = f.FlowId };
+        if (f.Revision <= cursor.Revision) return 0;
+
+        var at = DateTimeOffset.FromUnixTimeMilliseconds(f.UpdatedAt ?? f.CreatedAt ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var stream = Streams.Task(f.FlowId);
+        var n = 0;
+        // Martens Causation ist sessionweit: die Ursache des ganzen Batches ist das, was vor ihm kam.
+        // Die Ursache je Event steht im Payload (Meta.CausationId).
+        s.CausationId = cursor.LastKey;
+
+        // 1) Schrittwechsel
+        if (!string.IsNullOrEmpty(f.CurrentStep) && f.CurrentStep != cursor.Step)
+        {
+            var key = $"{f.FlowId}:{f.Revision}:stage";
+            s.Events.Append(stream, new StageEntered(f.FlowId, f.CurrentStep, cursor.Step, f.Revision,
+                Meta(cursor.LastKey, key, at)));
+            cursor.Step = f.CurrentStep;
+            cursor.LastKey = key;
+            n++;
+        }
+
+        // 2) Statuswechsel, soweit der Katalog ihn kennt
+        if (f.Status != cursor.Status)
+        {
+            if (HaltedStatuses.Contains(f.Status))
+            {
+                var key = $"{f.FlowId}:{f.Revision}:halted";
+                s.Events.Append(stream, new Halted(f.FlowId, f.Status, f.Revision, f.BlockedSummary, Meta(cursor.LastKey, key, at)));
+                cursor.LastKey = key;
+                n++;
+            }
+            else if (f.Status == "succeeded")
+            {
+                var key = $"{f.FlowId}:{f.Revision}:completed";
+                s.Events.Append(stream, new FlowCompleted(f.FlowId, f.Revision, Meta(cursor.LastKey, key, at)));
+                cursor.LastKey = key;
+                n++;
+            }
+            // queued | running | waiting: kein eigenes Event — waiting wird über operator_approvals sichtbar
+            cursor.Status = f.Status;
+        }
+
+        cursor.Revision = f.Revision;
+        s.CorrelationId = f.FlowId;
+        s.Store(cursor);
+        await s.SaveChangesAsync(ct);
+        if (n > 0) log.LogInformation("Flow {FlowId} rev {Revision}: {Count} Event(s), Schritt {Step}, Status {Status}", f.FlowId, f.Revision, n, f.CurrentStep, f.Status);
+        return n;
+    }
+
+    private static async Task<int> ProjectApprovalAsync(IDocumentStore store, OpenClawState.ApprovalRow a, ILogger log, CancellationToken ct)
+    {
+        await using var s = store.LightweightSession();
+        var cursor = await s.LoadAsync<ApprovalCursor>(a.ApprovalId, ct) ?? new ApprovalCursor { Id = a.ApprovalId, FlowId = a.FlowId };
+        if (a.Status == cursor.Status && a.Decision == cursor.Decision) return 0;
+
+        var flowId = a.FlowId ?? cursor.FlowId;
+        if (flowId is null)
+        {
+            log.LogWarning("Approval {ApprovalId} ({Kind}) gehört zu keinem Flow (source_run_id ohne task_runs.parent_flow_id) — übersprungen", a.ApprovalId, a.Kind);
+            return 0;
+        }
+
+        var stream = Streams.Approval(flowId);
+        var flowCursor = await s.LoadAsync<FlowCursor>(flowId, ct);
+        var stage = flowCursor?.Step ?? "";
+        var n = 0;
+        s.CausationId = cursor.LastKey ?? flowCursor?.LastKey;
+
+        // OpenClaw 2026.9.1, operator_approvals.status ∈ pending | allowed | denied | expired | cancelled;
+        // decision ∈ allow-once | allow-always | deny; resolver_kind ∈ device | channel | runtime | system.
+        // Wer entschieden hat: resolver_id (Geräte-/Kanal-ID, pseudonym) — kein Klarname im Log (§9).
+        var actorType = a.ResolverKind is "device" or "channel" ? "human" : "automation";
+        var actorId = a.ResolverId ?? a.ResolverKind ?? "openclaw";
+        switch (a.Status)
+        {
+            case "pending":
+            {
+                var key = $"{a.ApprovalId}:pending";
+                if (cursor.LastKey != key)
+                {
+                    s.Events.Append(stream, new GatePending(flowId, a.ApprovalId, stage,
+                        Meta(flowCursor?.LastKey, key, Ms(a.CreatedAtMs))));
+                    cursor.LastKey = key;
+                    n++;
+                }
+                break;
+            }
+            case "allowed":
+            {
+                var key = $"{a.ApprovalId}:granted";
+                s.Events.Append(stream, new ApprovalGranted(flowId, a.ApprovalId, a.ResolverId,
+                    Meta(cursor.LastKey, key, Ms(a.ResolvedAtMs ?? a.UpdatedAtMs), actorType, actorId)));
+                cursor.LastKey = key;
+                n++;
+                break;
+            }
+            case "denied" or "expired" or "cancelled":
+            {
+                var key = $"{a.ApprovalId}:denied";
+                s.Events.Append(stream, new ApprovalDenied(flowId, a.ApprovalId, a.ResolverId,
+                    a.Status == "denied" ? (a.TerminalReason ?? "user") : a.Status,
+                    Meta(cursor.LastKey, key, Ms(a.ResolvedAtMs ?? a.UpdatedAtMs), actorType, actorId)));
+                cursor.LastKey = key;
+                n++;
+                break;
+            }
+            default:
+                log.LogWarning("Approval {ApprovalId}: unbekannter Status '{Status}' — kein Event", a.ApprovalId, a.Status);
+                break;
+        }
+
+        cursor.Status = a.Status;
+        cursor.Decision = a.Decision;
+        cursor.FlowId = flowId;
+        s.CorrelationId = flowId;
+        s.Store(cursor);
+        await s.SaveChangesAsync(ct);
+        if (n > 0) log.LogInformation("Approval {ApprovalId} für Flow {FlowId}: {Status}/{Decision}", a.ApprovalId, flowId, a.Status, a.Decision);
+        return n;
+    }
+
+    private static EventMeta Meta(string? causation, string key, DateTimeOffset at, string actorType = "automation", string actorId = "openclaw") =>
+        new(actorType, actorId, causation, key, at);
+
+    private static DateTimeOffset Ms(long? ms) =>
+        ms is { } v ? DateTimeOffset.FromUnixTimeMilliseconds(v) : DateTimeOffset.UtcNow;
+}
+
+/// <summary>Der Poll-Loop im Betrieb. Tag 1 lief ohne ihn; mit leerem OpenClaw:StatePath bleibt er inaktiv.</summary>
+public sealed class ConnectorService(IDocumentStore store, IConfiguration config, ILogger<ConnectorService> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
-        var statePath  = config["OpenClaw:StatePath"];   // z.B. C:\Users\...\.openclaw\state\openclaw.sqlite
-        var gatewayUrl = config["OpenClaw:GatewayUrl"];  // z.B. ws://127.0.0.1:18789
-        var pollEvery  = TimeSpan.FromSeconds(config.GetValue("OpenClaw:PollSeconds", 5));
+        var statePath = config["OpenClaw:StatePath"];
+        var every = TimeSpan.FromSeconds(config.GetValue("OpenClaw:PollSeconds", 5));
 
         if (string.IsNullOrWhiteSpace(statePath))
         {
-            log.LogInformation("Connector inaktiv: OpenClaw:StatePath nicht gesetzt (Tag 1: erwartet)");
+            log.LogInformation("Connector inaktiv: OpenClaw:StatePath nicht gesetzt");
             return;
         }
+        log.LogInformation("Connector: poll {Path} alle {Every}s", statePath, every.TotalSeconds);
 
-        log.LogInformation("Connector: poll {Path} alle {Every}s, Gateway {Gateway}",
-            statePath, pollEvery.TotalSeconds, gatewayUrl ?? "(keins)");
-
-        using var timer = new PeriodicTimer(pollEvery);
-        while (await timer.WaitForNextTickAsync(ct))
+        var warnedMissing = false;
+        using var timer = new PeriodicTimer(every);
+        do
         {
-            // TODO Tag 2: flow_runs lesen (revision > zuletzt gesehen) -> StageEntered / Halted / GatePending
-            // TODO Tag 2: WebSocket-Approvals -> ApprovalGranted / ApprovalDenied
-        }
+            try
+            {
+                if (!File.Exists(statePath))
+                {
+                    if (!warnedMissing) { log.LogWarning("State-Datei {Path} noch nicht da — warte", statePath); warnedMissing = true; }
+                    continue;
+                }
+                warnedMissing = false;
+                await OpenClawConnector.PollOnceAsync(store, statePath, log, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex, "Poll fehlgeschlagen — nächster Versuch in {Every}s", every.TotalSeconds);
+            }
+        } while (await timer.WaitForNextTickAsync(ct));
     }
 }

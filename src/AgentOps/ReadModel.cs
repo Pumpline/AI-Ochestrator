@@ -33,6 +33,7 @@ public sealed class FlowViewProjection : MultiStreamProjection<FlowView, string>
         Name = Key;
         Identity<StageEntered>(e => e.FlowId);
         Identity<Halted>(e => e.FlowId);
+        Identity<FlowCompleted>(e => e.FlowId);
         Identity<GatePending>(e => e.FlowId);
         Identity<ApprovalGranted>(e => e.FlowId);
         Identity<ApprovalDenied>(e => e.FlowId);
@@ -62,6 +63,15 @@ public sealed class FlowViewProjection : MultiStreamProjection<FlowView, string>
         v.UpdatedAt = e.Meta.OccurredAt;
     }
 
+    public void Apply(FlowCompleted e, FlowView v)
+    {
+        v.Status = "succeeded";
+        v.Revision = e.Revision;
+        v.GateOpen = false;
+        v.OpenApprovalId = null;
+        v.UpdatedAt = e.Meta.OccurredAt;
+    }
+
     public void Apply(GatePending e, FlowView v)
     {
         v.Status = "waiting";
@@ -70,9 +80,11 @@ public sealed class FlowViewProjection : MultiStreamProjection<FlowView, string>
         v.UpdatedAt = e.Meta.OccurredAt;
     }
 
+    // Eine Freigabe schließt das Gate. Den Status ändert sie nur, wenn der Flow gerade darauf gewartet hat —
+    // ein Flow, der inzwischen fertig oder gestoppt ist, wird durch eine späte Freigabe nicht wieder "running".
     public void Apply(ApprovalGranted e, FlowView v)
     {
-        v.Status = "running";
+        if (v.Status == "waiting") v.Status = "running";
         v.GateOpen = false;
         v.OpenApprovalId = null;
         v.UpdatedAt = e.Meta.OccurredAt;
@@ -80,7 +92,7 @@ public sealed class FlowViewProjection : MultiStreamProjection<FlowView, string>
 
     public void Apply(ApprovalDenied e, FlowView v)
     {
-        v.Status = "running";   // der nächste StageEntered setzt die Stufe (Findings → zurück in code, Abb. 5)
+        if (v.Status == "waiting") v.Status = "running";   // der nächste StageEntered setzt die Stufe (Abb. 5)
         v.GateOpen = false;
         v.OpenApprovalId = null;
         v.UpdatedAt = e.Meta.OccurredAt;

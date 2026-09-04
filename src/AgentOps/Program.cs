@@ -66,6 +66,17 @@ if (args.Contains("--rebuild"))
     return 0;
 }
 
+// --poll-once [state.sqlite]: ein Connector-Durchlauf gegen eine State-Datei, dann beenden (Tests, Nachholen).
+if (args.Contains("--poll-once"))
+{
+    var path = ArgAfter("--poll-once", builder.Configuration["OpenClaw:StatePath"] ?? "");
+    if (string.IsNullOrWhiteSpace(path)) throw new InvalidOperationException("--poll-once braucht einen Pfad oder OpenClaw:StatePath");
+    var n = await OpenClawConnector.PollOnceAsync(store, path, app.Logger, ct);
+    await Day1Check.ProjectOnceAsync(store);
+    app.Logger.LogInformation("Poll: {Count} Event(s) angehängt, Projektion auf Stand", n);
+    return 0;
+}
+
 // --check: nur die Prüfsumme des Read-Models ausgeben.
 if (args.Contains("--check"))
 {

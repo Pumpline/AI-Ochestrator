@@ -104,6 +104,41 @@ Der letzte Grant lässt den Container (Rolle `agentops`) dieselbe Dev-Datenbank 
 gibt es keinen Grant, `agentops_dev` kommt nicht an `agentops`.
 **Nie `reassign owned by`** zum Umhängen benutzen — das reicht Datenbanken als Shared Objects gleich mit weiter.
 
+## Tag 2: der Connector
+
+Läuft im App-Container als `ConnectorService`, liest OpenClaws State-Datei alle 5 s (Verbindung `Mode=ReadOnly`,
+Busy-Timeout 5 s) und schreibt Events — sonst nichts. Kein WebSocket: die Datei hält auch die Freigaben,
+der Socket wäre nur Beschleuniger (§10).
+
+| Quelle | Bedingung | Event |
+|---|---|---|
+| `flow_runs` | `current_step` ≠ zuletzt gesehen | `StageEntered` |
+| `flow_runs` | `status` ∈ failed, lost, blocked, cancelled | `Halted` (Grund: `blocked_summary`) |
+| `flow_runs` | `status` = succeeded | `FlowCompleted` |
+| `operator_approvals` | `status` = pending | `GatePending` |
+| `operator_approvals` | `status` = allowed | `ApprovalGranted` (actor_ref: `resolver_id`) |
+| `operator_approvals` | `status` ∈ denied, expired, cancelled | `ApprovalDenied` |
+
+Nur Revisionen, die Schritt oder Status ändern, erzeugen ein Event; Idempotenzschlüssel `flow:revision:art`.
+Das Gesehene steht als Cursor-Dokument (`FlowCursor`, `ApprovalCursor`, Schema `agentops`) **in derselben
+Transaktion** wie die Events — ein Neustart schreibt nichts doppelt. Änderungen innerhalb eines Poll-Intervalls
+werden nach Zeitstempel geordnet, bei Gleichstand Freigabe vor Flow. Zwischenschritte, die kürzer als ein Intervall
+leben, sieht Polling nicht — der Log hält dann `previous` ≠ vorheriger Schritt.
+
+Test ohne laufende Flows — `fixtures/openclaw-test.py` baut aus dem echten Schema eine synthetische State-Datei
+und spielt vier Phasen durch (Schritte, Blockade, Freigabe pending → allowed, Abschluss):
+
+```bash
+export AGENTOPS_DB=agentops_dev
+for p in 1 2 3 4; do
+  python3 fixtures/openclaw-test.py openclaw/state/openclaw.sqlite fixtures/openclaw-test.sqlite $p
+  docker compose --profile app run --rm --no-deps -e OpenClaw__StatePath=/app/fixtures/openclaw-test.sqlite agentops --poll-once /app/fixtures/openclaw-test.sqlite </dev/null
+done
+docker compose --profile app run --rm --no-deps agentops --check </dev/null   # erwartet: f1 ship succeeded rev 5, f2 code blocked rev 3
+```
+
+Bestanden 2026-09-05: 10 Events in 4 Streams, Reihenfolge domänenkorrekt, zweiter Poll 0 Events, Prüfsumme nach Rebuild identisch.
+
 ## Read-API (P2) und Grafana-Board (P3)
 
 Die API liest nur. `/health` ist offen und sagt genau ein Bit; alles unter `/api` verlangt

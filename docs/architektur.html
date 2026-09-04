@@ -566,12 +566,13 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
   occurred_at     <em>timestamptz</em>   <i>-- wann es in der Welt geschah</i>
   recorded_at     <em>timestamptz</em>   <i>-- wann du davon erfuhrst</i>
 );</pre>
-  <p>Und der Katalog für Tag 1. Fünf Typen reichen, weil beide Quellen aus §10 sauber darauf abbilden:</p>
-  <pre><b>StageEntered</b>     { stage, previous, revision }         <i>← flow_runs, JSON-Zustand</i>
-<b>Halted</b>           { status, revision }                  <i>← flow_runs; status ∈ failed | lost | blocked</i>
-<b>GatePending</b>      { approval_id, stage }                <i>← WebSocket, oder flow_runs.status = waiting</i>
-<b>ApprovalGranted</b>  { approval_id, actor_ref? }           <i>← WebSocket; actor_ref nur falls geliefert</i>
-<b>ApprovalDenied</b>   { approval_id, actor_ref?, reason? }  <i>← WebSocket</i></pre>
+  <p>Und der Katalog. Fünf Typen für Tag 1, ein sechster seit dem Connector — beide Quellen aus §10 bilden sauber darauf ab:</p>
+  <pre><b>StageEntered</b>     { stage, previous, revision }         <i>← flow_runs.current_step</i>
+<b>Halted</b>           { status, revision, reason? }         <i>← flow_runs; status ∈ failed | lost | blocked | cancelled</i>
+<b>FlowCompleted</b>    { revision }                          <i>← flow_runs.status = succeeded</i>
+<b>GatePending</b>      { approval_id?, stage }               <i>← operator_approvals.status = pending</i>
+<b>ApprovalGranted</b>  { approval_id, actor_ref? }           <i>← operator_approvals.status = allowed; actor_ref = resolver_id</i>
+<b>ApprovalDenied</b>   { approval_id, actor_ref?, reason? }  <i>← operator_approvals.status ∈ denied | expired | cancelled</i></pre>
   <p>Zu den vier Feldern, die man gern wegrationalisiert:</p>
   <ul class="plain">
     <li><code>correlation_id</code> ist die OpenClaw-Flow-ID. Damit klammerst du sämtliche Events eines Laufs zusammen. Der Sprung von hier in einen Trace (Tempo, falls du Traces später einschaltest) ist allerdings <em>nicht</em> gratis: OpenClaws OTel-Exporter lässt Session-Schlüssel aus Datenschutzgründen bewusst weg. Ob er eine Flow- oder Run-ID als „bounded identifier“ mitgibt, siehst du am ersten echten Trace. Falls nicht, bleibt Korrelation über Zeitfenster und Agent — brauchbar, aber kein Deep-Link.</li>
@@ -589,7 +590,7 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
 <section id="s10">
   <h3><span class="num">§10</span>Der Weg eines Events</h3>
   <p>Fünf Stationen, und keine kennt die nächste. Der Connector weiß nichts von Projektionen, der Projektor nichts von der API.</p>
-  <p>Der Connector liest zwei Quellen. Die Wahrheit ist OpenClaws eigene Datei <code>~/.openclaw/state/openclaw.sqlite</code>, Tabelle <code>flow_runs</code>: pro Flow ein Status aus acht festen Werten, ein JSON-Zustand mit deinen Schritten und ein Revisionszähler, der bei jeder Änderung hochzählt. Der Connector pollt sie und emittiert für jede neue Revision genau ein Event — <code>flow_id + revision</code> ist damit der Idempotenzschlüssel, geschenkt. Die zweite Quelle ist das Gateway per WebSocket (<code>sessions.messages.subscribe</code> mit <code>includeApprovals</code>, braucht den Scope <code>operator.approvals</code>): sie liefert Freigabe-Ereignisse sofort statt beim nächsten Poll. Fällt die Verbindung aus, holt der nächste SQLite-Durchlauf alles nach. <strong>Die Datei ist die Wahrheit, der Socket nur der Beschleuniger.</strong> Zwei Konsequenzen: der Connector läuft auf demselben Host wie OpenClaw, weil er die Datei braucht — und er öffnet sie strikt lesend (<code>mode=ro</code>, Busy-Timeout gesetzt), damit er OpenClaws Schreibzugriffe nie blockiert. Im Container heißt das: OpenClaws State-Verzeichnis als Volume, aber nicht als <code>:ro</code>-Mount — SQLite im WAL-Modus braucht auch zum Lesen Schreibzugriff auf die <code>-shm</code>-Datei. Die Read-only-Garantie liegt auf der Verbindung, nicht auf dem Dateisystem.</p>
+  <p>Der Connector liest zwei Quellen. Die Wahrheit ist OpenClaws eigene Datei <code>~/.openclaw/state/openclaw.sqlite</code>, Tabelle <code>flow_runs</code>: pro Flow ein Status aus acht festen Werten, ein JSON-Zustand mit deinen Schritten und ein Revisionszähler, der bei jeder Änderung hochzählt. Der Connector pollt sie und emittiert für jede Revision, die Schritt oder Status ändert, ein Event — <code>flow_id + revision + Art</code> ist der Idempotenzschlüssel, geschenkt. Die Freigaben stehen in derselben Datei (<code>operator_approvals</code>, mit <code>resolver_id</code> als Freigebendem); der WebSocket des Gateways wäre nur ein Beschleuniger und ist deshalb noch nicht gebaut. Was der Connector zuletzt gesehen hat, liegt als Cursor-Dokument <em>in derselben Transaktion</em> wie die Events — ein Neustart schreibt nichts doppelt. Änderungen innerhalb eines Poll-Intervalls werden nach Zeitstempel geordnet, bei Gleichstand Freigabe vor Flow. <strong>Die Datei ist die Wahrheit.</strong> Zwei Konsequenzen: der Connector läuft auf demselben Host wie OpenClaw, weil er die Datei braucht — und er öffnet sie strikt lesend (<code>mode=ro</code>, Busy-Timeout gesetzt), damit er OpenClaws Schreibzugriffe nie blockiert. Im Container heißt das: OpenClaws State-Verzeichnis als Volume, aber nicht als <code>:ro</code>-Mount — SQLite im WAL-Modus braucht auch zum Lesen Schreibzugriff auf die <code>-shm</code>-Datei. Die Read-only-Garantie liegt auf der Verbindung, nicht auf dem Dateisystem.</p>
 </section>
 
 <figure>

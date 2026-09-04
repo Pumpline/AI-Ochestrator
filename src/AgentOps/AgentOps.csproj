@@ -14,6 +14,8 @@
     <!-- Event-Store, Projektionen, Async-Daemon, Rebuild (§14 Schritt 3).
          Nicht unter 8.37: CVE-2026-45288 (SQL-Injection in der Volltextsuche, GHSA-vmw2-qwm8-x84c). -->
     <PackageReference Include="Marten" Version="9.31.2" />
+    <!-- Connector: lesender Zugriff auf OpenClaws State-Datei (SQLite, WAL) -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.*" />
   </ItemGroup>
 
 </Project>

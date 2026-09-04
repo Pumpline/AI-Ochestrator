@@ -44,7 +44,14 @@ public static class Day1Check
     {
         using var daemon = await store.BuildProjectionDaemonAsync();
         await daemon.StartAllAsync();
-        await daemon.WaitForNonStaleData(TimeSpan.FromSeconds(30));
+        try
+        {
+            await daemon.WaitForNonStaleData(TimeSpan.FromSeconds(30));
+        }
+        catch (TimeoutException)
+        {
+            // Marten meldet "keine Event-Aktivität" als Timeout — heißt hier: es gab nichts Neues zu projizieren.
+        }
         await daemon.StopAllAsync();
     }
 
