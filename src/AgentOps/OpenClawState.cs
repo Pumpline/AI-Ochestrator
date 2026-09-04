@@ -14,7 +14,8 @@ public static class OpenClawState
 
     public sealed record ApprovalRow(
         string ApprovalId, string? FlowId, string? Kind, string Status, string? Decision, string? ResolverKind,
-        string? ResolverId, string? TerminalReason, long? CreatedAtMs, long? UpdatedAtMs, long? ResolvedAtMs);
+        string? ResolverId, string? TerminalReason, long? CreatedAtMs, long? UpdatedAtMs, long? ResolvedAtMs,
+        string? SourceRunId = null);
 
     public static SqliteConnection Open(string path)
     {
@@ -61,7 +62,7 @@ public static class OpenClawState
     {
         const string sql = """
             select a.approval_id, t.parent_flow_id, a.kind, a.status, a.decision, a.resolver_kind, a.resolver_id,
-                   a.terminal_reason, a.created_at_ms, a.updated_at_ms, a.resolved_at_ms
+                   a.terminal_reason, a.created_at_ms, a.updated_at_ms, a.resolved_at_ms, a.source_run_id
             from operator_approvals a
             left join (select run_id, max(parent_flow_id) as parent_flow_id from task_runs group by run_id) t
                    on t.run_id = a.source_run_id
@@ -79,7 +80,7 @@ public static class OpenClawState
                 r.GetString(0), Str(r, 1), Str(r, 2),
                 r.IsDBNull(3) ? "" : r.GetString(3),
                 Str(r, 4), Str(r, 5), Str(r, 6), Str(r, 7),
-                Long(r, 8), Long(r, 9), Long(r, 10)));
+                Long(r, 8), Long(r, 9), Long(r, 10), Str(r, 11)));
         }
         return rows;
     }

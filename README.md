@@ -184,9 +184,40 @@ Aktualisieren = `index.js` neu kopieren und Gateway neu starten. Der Symlink `no
 (Commit `bac9d20`) → succeeded. Drei Schritte in 90 s, Gesamtkosten rund **0,6 USD**. Im Cockpit als
 `StageEntered` ×6 und `FlowCompleted`, Board und `/api/flows/{id}/events` zeigen die Zeitleiste.
 
-Bekannte Lücke: `runTask` meldet „Task backing ownership could not be verified" — die Schritt-Läufe werden nicht
-als Kind-Tasks des Flows verbucht (`task_runs.parent_flow_id` bleibt leer). Der Flow läuft trotzdem; betroffen ist
-nur der Join von OpenClaws Exec-Approvals auf den Flow. Review-Ergebnis `REQUEST_CHANGES` verzweigt in v0.1 noch nicht.
+### Die Souls sind eigene Agenten
+
+Seit Lauf #2 ist jeder Schritt ein eigener OpenClaw-Agent: `agents.entries.pipeline-<step>` mit eigenem Workspace
+`/home/node/.openclaw/workspace-pipeline-<step>/` und `SOUL.md` darin. Quelle der Souls ist `infra/openclaw/souls/<step>.md`
+im Repo; auf srv1 liegt die Kopie in `/opt/agentops/openclaw/workspace-pipeline-<step>/SOUL.md`. Anlegen (einmalig):
+
+```bash
+cd /opt/agentops && cp -r infra/openclaw/souls openclaw/
+for s in plan code test review ship; do
+  mkdir -p openclaw/workspace-pipeline-$s && cp openclaw/souls/$s.md openclaw/workspace-pipeline-$s/SOUL.md
+  docker exec agentops-openclaw node openclaw.mjs agents add pipeline-$s --workspace /home/node/.openclaw/workspace-pipeline-$s --model openai/gpt-5.6-sol --non-interactive
+done
+```
+
+Soul ändern = Datei ändern; beim nächsten Lauf gilt sie. **Pro Projekt** überschreibt `<repo>/.agentops/souls/<step>.md`
+die Soul des Agenten (kommt als `extraSystemPrompt` oben drauf) — die Grundlage für den Soul-Editor im Frontend.
+Der Plugin-Parameter `agentPrefix` (Default `pipeline-`) wählt den Agenten-Satz.
+
+Weil jeder Schritt-Agent seinen Lauf selbst besitzt, der Flow aber `main` gehört, greift OpenClaws eigene
+Kind-Task-Verknüpfung (`runTask`) nicht — „Task backing ownership could not be verified" ist strukturell, kein
+Timing. Die Zuordnung Lauf ↔ Flow steht deshalb im Flow (`stateJson.runs[step] = runId`), und der Connector
+nutzt sie auch für den Join von OpenClaws Exec-Approvals auf den Flow. Review-Ergebnis `REQUEST_CHANGES`
+verzweigt in v0.1 noch nicht.
+
+**Lauf #2** (divide() mit Fehlerfall, 4/4 Tests grün, Commit `9e0c592`): Kosten je Soul, aus Prometheus
+`openclaw_cost_usd_total{openclaw_agent}` — die Frage „was hat Agent X gekostet?" ist damit pro Schritt beantwortbar:
+
+| plan | code | test | review | ship | gesamt |
+|---|---|---|---|---|---|
+| 0,14 | 0,31 | 0,19 | 0,20 | 0,24 | **1,08 USD** |
+
+Teurer als Lauf #1 (0,60 USD): jeder Agent-Workspace bringt eigenen Bootstrap-Kontext mit, und die Aufgabe war größer.
+Prompt-Tokens je Schritt 90k–195k über mehrere Modellaufrufe — der Hebel ist die Tool-Liste je Agent (`agents.entries.<id>.tools`),
+noch nicht angefasst.
 
 ## Read-API (P2) und Grafana-Board (P3)
 

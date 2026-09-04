@@ -49,9 +49,19 @@ public static class OpenClawConnector
         // In der Reihenfolge, in der es in OpenClaw passiert ist — nicht Flows zuerst, dann Approvals.
         // Innerhalb eines Poll-Intervalls kann beides liegen; bei gleicher Zeit zuerst die Freigabe,
         // weil der nächste Schritt eines Flows die Folge der Entscheidung ist, nicht umgekehrt.
+        // Lauf → Flow: für Flows der Pipeline steht die Zuordnung im Flow selbst (stateJson.runs[step] = runId),
+        // weil OpenClaws eigene Kind-Task-Verknüpfung bei Schritt-Agenten mit eigenem Owner nicht greift.
+        var runToFlow = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var f in flows)
+            foreach (var runId in ReadRunIds(f.StateJson))
+                runToFlow.TryAdd(runId, f.FlowId);
+
         var work = new List<(long ts, int order, Func<Task<int>> run)>();
-        foreach (var a in approvals)
+        foreach (var a0 in approvals)
+        {
+            var a = a0.FlowId is null && a0.SourceRunId is { } rid && runToFlow.TryGetValue(rid, out var viaState) ? a0 with { FlowId = viaState } : a0;
             work.Add((a.ResolvedAtMs ?? a.UpdatedAtMs ?? a.CreatedAtMs ?? 0, 0, () => ProjectApprovalAsync(store, a, log, ct)));
+        }
         foreach (var f in flows)
             work.Add((f.UpdatedAt ?? f.CreatedAt ?? 0, 1, () => ProjectFlowAsync(store, f, log, ct)));
 
@@ -74,31 +84,11 @@ public static class OpenClawConnector
         // Die Ursache je Event steht im Payload (Meta.CausationId).
         s.CausationId = cursor.LastKey;
 
-        // 1) Schrittwechsel
-        if (!string.IsNullOrEmpty(f.CurrentStep) && f.CurrentStep != cursor.Step)
-        {
-            var key = $"{f.FlowId}:{f.Revision}:stage";
-            s.Events.Append(stream, new StageEntered(f.FlowId, f.CurrentStep, cursor.Step, f.Revision,
-                Meta(cursor.LastKey, key, at)));
-            cursor.Step = f.CurrentStep;
-            cursor.LastKey = key;
-            n++;
-        }
-
-        // 2) Plugin-Gate (agentops-pipeline): waiting mit waitJson.kind = "gate" öffnet es,
+        // 1) Ein geschlossenes Plugin-Gate zuerst — die Entscheidung geht dem nächsten Schritt voraus.
+        //    Plugin-Gate (agentops-pipeline): waiting mit waitJson.kind = "gate" öffnet es,
         //    das Verlassen von waiting mit stateJson.gate.decision schließt es — mit dem Freigebenden aus gate.by.
         var gateStream = Streams.Approval(f.FlowId);
-        if (f.Status == "waiting" && cursor.Status != "waiting" && cursor.GateApprovalId is null
-            && TryReadGate(f.WaitJson, out var gateStep))
-        {
-            var approvalId = $"gate:{f.FlowId}:{gateStep}";
-            var key = $"{approvalId}:pending";
-            s.Events.Append(gateStream, new GatePending(f.FlowId, approvalId, gateStep, Meta(cursor.LastKey, key, at)));
-            cursor.GateApprovalId = approvalId;
-            cursor.LastKey = key;
-            n++;
-        }
-        else if (cursor.GateApprovalId is { } openGate && f.Status != "waiting")
+        if (cursor.GateApprovalId is { } openGate && f.Status != "waiting")
         {
             var (decision, by) = ReadGateDecision(f.StateJson);
             var actor = string.IsNullOrWhiteSpace(by) ? "operator" : by;
@@ -120,7 +110,30 @@ public static class OpenClawConnector
             cursor.GateApprovalId = null;
         }
 
-        // 3) Statuswechsel, soweit der Katalog ihn kennt
+        // 2) Schrittwechsel
+        if (!string.IsNullOrEmpty(f.CurrentStep) && f.CurrentStep != cursor.Step)
+        {
+            var key = $"{f.FlowId}:{f.Revision}:stage";
+            s.Events.Append(stream, new StageEntered(f.FlowId, f.CurrentStep, cursor.Step, f.Revision,
+                Meta(cursor.LastKey, key, at)));
+            cursor.Step = f.CurrentStep;
+            cursor.LastKey = key;
+            n++;
+        }
+
+        // 3) Ein neu geöffnetes Plugin-Gate — nach dem Schritt "gate", der es ankündigt
+        if (f.Status == "waiting" && cursor.Status != "waiting" && cursor.GateApprovalId is null
+            && TryReadGate(f.WaitJson, out var gateStep))
+        {
+            var approvalId = $"gate:{f.FlowId}:{gateStep}";
+            var key = $"{approvalId}:pending";
+            s.Events.Append(gateStream, new GatePending(f.FlowId, approvalId, gateStep, Meta(cursor.LastKey, key, at)));
+            cursor.GateApprovalId = approvalId;
+            cursor.LastKey = key;
+            n++;
+        }
+
+        // 4) Statuswechsel, soweit der Katalog ihn kennt
         if (f.Status != cursor.Status)
         {
             if (HaltedStatuses.Contains(f.Status))
@@ -239,6 +252,24 @@ public static class OpenClawConnector
             return true;
         }
         catch (System.Text.Json.JsonException) { return false; }
+    }
+
+    /// <summary>stateJson.runs = {"plan":"<runId>", …} — die Läufe eines Pipeline-Flows.</summary>
+    private static IEnumerable<string> ReadRunIds(string? stateJson)
+    {
+        if (string.IsNullOrWhiteSpace(stateJson)) yield break;
+        System.Text.Json.JsonDocument doc;
+        try { doc = System.Text.Json.JsonDocument.Parse(stateJson); }
+        catch (System.Text.Json.JsonException) { yield break; }
+        using (doc)
+        {
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("runs", out var runs)
+                || runs.ValueKind != System.Text.Json.JsonValueKind.Object) yield break;
+            foreach (var p in runs.EnumerateObject())
+                if (p.Value.ValueKind == System.Text.Json.JsonValueKind.String && p.Value.GetString() is { Length: > 0 } id)
+                    yield return id;
+        }
     }
 
     /// <summary>stateJson.gate = {"decision":"allow"|"deny","by":"…"} nach der Entscheidung.</summary>
