@@ -1,0 +1,30 @@
+{
+  "gateway": {
+    "mode": "local",
+    "port": 18789,
+    "bind": "0.0.0.0",
+    "auth": {
+      "mode": "token"
+    }
+  },
+  "agents": {
+    "defaults": {
+      "workspace": "~/.openclaw/workspace"
+    }
+  },
+  "plugins": {
+    "allow": ["diagnostics-otel"],
+    "entries": {
+      "diagnostics-otel": { "enabled": true }
+    }
+  },
+  "diagnostics": {
+    "enabled": true,
+    "otel": {
+      "enabled": true,
+      "endpoint": "http://otel-collector:4318",
+      "protocol": "http/protobuf",
+      "serviceName": "openclaw-gateway"
+    }
+  }
+}

@@ -124,6 +124,33 @@ Das Grafana-Board **Agent-Ops** (`infra/grafana/provisioning/dashboards/agentops
 in der UI editierbar) beantwortet die drei Fragen aus P3: offene Gates, stehen gebliebene Flows,
 Flows nach Status, Kosten pro Modell aus Prometheus (leer, bis ein Orchestrator exportiert), alle Flows.
 
+## OpenClaw (Ebene 1) auf srv1
+
+Entscheidung 2026-09-05: OpenClaw bleibt der Orchestrator — als **Container** aus dem offiziellen Image
+(`ghcr.io/openclaw/openclaw`), Profil `openclaw` in derselben `compose.yaml`. Das Image läuft als uid 1000,
+auf srv1 ist das `admin`: Bind-Mounts brauchen kein sudo, und der Connector (ebenfalls 1000) liest die SQLite direkt.
+Gateway und Connector reden über das Compose-Netz (`ws://openclaw:18789`), nach außen nur `127.0.0.1:18789`.
+
+Einmalig auf srv1:
+
+```bash
+cd /opt/agentops
+mkdir -p openclaw && cp -n infra/openclaw/openclaw.json openclaw/     # Vorlage: mode local, bind 0.0.0.0, Token aus Env, OTel → Collector
+grep -q '^OPENCLAW_GATEWAY_TOKEN=.' .env || echo "OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)" >> .env
+sed -i 's#^OPENCLAW_STATE_DIR=.*#OPENCLAW_STATE_DIR=/opt/agentops/openclaw/state#' .env
+docker compose --profile openclaw up -d
+docker compose --profile openclaw run --rm openclaw plugins install clawhub:@openclaw/diagnostics-otel </dev/null
+docker compose --profile openclaw restart openclaw
+curl -s http://127.0.0.1:18789/healthz
+```
+
+Danach `--profile app` neu starten, damit der Connector den neuen State-Pfad und das Token bekommt:
+`docker compose --profile app --profile openclaw up -d`.
+
+Provider-Schlüssel (Anthropic o.ä.) kommen als Env in den OpenClaw-Container, nie in die Konfig-Datei —
+Zeile in `.env`, Eintrag unter `environment:` des Dienstes. Welche Variable das Image erwartet, steht in der
+OpenClaw-Doku zum jeweiligen Provider.
+
 ## Server: srv1
 
 Debian 13, 4 vCPU, 31 GB RAM, Docker 29 / Compose v5, erreichbar nur über Tailscale

@@ -86,6 +86,31 @@ services:
         condition: service_started
     networks: [agentops]
 
+  # Ebene 1: der Orchestrator. Offizielles Image, läuft als uid 1000 (node) — auf srv1 ist das admin,
+  # deshalb braucht das Bind-Mount kein sudo. Nur mit --profile openclaw.
+  # Konfig-Vorlage: infra/openclaw/openclaw.json → einmalig nach $OPENCLAW_HOME_DIR kopieren (README).
+  openclaw:
+    profiles: ["openclaw"]
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: agentops-openclaw
+    restart: unless-stopped
+    user: "${AGENTOPS_UID:-1000}:${AGENTOPS_GID:-1000}"
+    environment:
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?OPENCLAW_GATEWAY_TOKEN fehlt in .env}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    volumes:
+      # Konfig, State (state/openclaw.sqlite — das liest der Connector), Workspace
+      - ${OPENCLAW_HOME_DIR:-./fixtures/openclaw-home}:/home/node/.openclaw
+      # Repos, an denen die Agenten arbeiten (auf srv1 /opt/repos)
+      - ${OPENCLAW_REPOS_DIR:-./fixtures/openclaw-repos}:/home/node/repos
+    ports:
+      - "127.0.0.1:18789:18789"
+    cap_drop: [NET_RAW, NET_ADMIN]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      - otel-collector
+    networks: [agentops]
+
   # Der eigene Dienst: Connector + Projektor + Read-API in einem Container.
   # Nur mit --profile app, damit Tag 1 ohne Build auskommt.
   agentops:
@@ -105,13 +130,15 @@ services:
       # Leer = /api antwortet 503. Nie offen.
       Api__Token: ${API_TOKEN:-}
       OpenClaw__StatePath: /openclaw/state/openclaw.sqlite
-      OpenClaw__GatewayUrl: ws://host.docker.internal:18789
+      # Gateway als Compose-Dienst im selben Netz (profile openclaw)
+      OpenClaw__GatewayUrl: ws://openclaw:18789
+      OpenClaw__GatewayToken: ${OPENCLAW_GATEWAY_TOKEN:-}
       OpenClaw__PollSeconds: "5"
     volumes:
       # OpenClaws State-Verzeichnis. Bewusst nicht :ro — SQLite im WAL-Modus braucht auch zum Lesen
       # Schreibzugriff auf die -shm-Datei. Die Read-only-Garantie liegt auf der Verbindung (Mode=ReadOnly).
       # Default zeigt auf einen leeren lokalen Ordner, damit `docker compose up` ohne Profil nicht an
-      # der Interpolation scheitert (Compose wertet ${..:?} vor den Profilen aus). Auf srv1 setzen.
+      # der Interpolation scheitert (Compose wertet ${..:?} vor den Profilen aus). Auf srv1: $OPENCLAW_HOME_DIR/state.
       - ${OPENCLAW_STATE_DIR:-./fixtures/openclaw-state}:/openclaw/state
       # Fixtures für --load (nicht im Image, .dockerignore)
       - ./fixtures:/app/fixtures:ro
