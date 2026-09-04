@@ -104,6 +104,26 @@ Der letzte Grant lässt den Container (Rolle `agentops`) dieselbe Dev-Datenbank 
 gibt es keinen Grant, `agentops_dev` kommt nicht an `agentops`.
 **Nie `reassign owned by`** zum Umhängen benutzen — das reicht Datenbanken als Shared Objects gleich mit weiter.
 
+## Read-API (P2) und Grafana-Board (P3)
+
+Die API liest nur. `/health` ist offen und sagt genau ein Bit; alles unter `/api` verlangt
+`Authorization: Bearer <API_TOKEN>` — ohne konfigurierten Token antwortet `/api` mit 503, nie offen.
+
+| Endpunkt | Antwort |
+|---|---|
+| `GET /api/flows[?status=waiting]` | alle Flows aus dem Read-Model, neueste zuerst |
+| `GET /api/flows/{id}` | ein Flow |
+| `GET /api/flows/{id}/events` | die Zeitleiste aus dem Log: seq, stream, version, type, recorded_at, causation, data |
+| `GET /api/gates` | Flows mit offenem Gate — „wartet auf mich“ |
+
+```bash
+curl -H "Authorization: Bearer $API_TOKEN" http://127.0.0.1:5080/api/gates
+```
+
+Das Grafana-Board **Agent-Ops** (`infra/grafana/provisioning/dashboards/agentops.json`, provisioniert, nicht
+in der UI editierbar) beantwortet die drei Fragen aus P3: offene Gates, stehen gebliebene Flows,
+Flows nach Status, Kosten pro Modell aus Prometheus (leer, bis ein Orchestrator exportiert), alle Flows.
+
 ## Server: srv1
 
 Debian 13, 4 vCPU, 31 GB RAM, Docker 29 / Compose v5, erreichbar nur über Tailscale

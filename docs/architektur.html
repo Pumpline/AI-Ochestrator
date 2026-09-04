@@ -818,12 +818,12 @@ a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:
     </div>
     <div class="ph">
       <div class="ph-n">P2</div>
-      <div><p class="ph-t">Gate-Sicht und Read-API</p><p class="ph-d">Lesende Endpunkte hinter einem Bearer-Token: Flows mit aktuellem Schritt, offene Gates als Liste mit Sprung in OpenClaws Freigabe. Kein eigener Freigabe-Endpunkt — <code>ApprovalGranted</code> kommt vom Connector, nicht vom Cockpit. Der Health-Check bleibt nackt.</p></div>
+      <div><p class="ph-t">Gate-Sicht und Read-API</p><p class="ph-d">Lesende Endpunkte hinter einem Bearer-Token: Flows mit aktuellem Schritt, offene Gates als Liste mit Sprung in OpenClaws Freigabe, die Zeitleiste eines Flows aus dem Log. Kein eigener Freigabe-Endpunkt — <code>ApprovalGranted</code> kommt vom Connector, nicht vom Cockpit. Der Health-Check bleibt nackt. <em>Umgesetzt am 4. September 2026: <code>/api/flows</code>, <code>/api/flows/{id}</code>, <code>/api/flows/{id}/events</code>, <code>/api/gates</code>; ohne Token antwortet <code>/api</code> mit 503, nie offen.</em></p></div>
       <div class="ph-c">~1 Tag</div>
     </div>
     <div class="ph">
       <div class="ph-n">P3</div>
-      <div><p class="ph-t">Grafana als eine Scheibe Glas</p><p class="ph-d">Zwei Datenquellen: Postgres über eine eigene Read-only-Rolle auf die Read-Models, und Prometheus. Drei Fragen muss das Board beantworten, sonst ist es nicht fertig: Welche Flows warten gerade auf mich? Was hat Agent X diese Woche gekostet? Warum ist Flow Y stehen geblieben?</p></div>
+      <div><p class="ph-t">Grafana als eine Scheibe Glas</p><p class="ph-d">Zwei Datenquellen: Postgres über eine eigene Read-only-Rolle auf die Read-Models, und Prometheus. Drei Fragen muss das Board beantworten, sonst ist es nicht fertig: Welche Flows warten gerade auf mich? Was hat Agent X diese Woche gekostet? Warum ist Flow Y stehen geblieben? <em>Board „Agent-Ops“ provisioniert am 4. September 2026 — die Kosten-Frage bleibt leer, bis ein Orchestrator exportiert.</em></p></div>
       <div class="ph-c">~½ Tag</div>
     </div>
     <div class="ph">

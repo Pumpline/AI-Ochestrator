@@ -102,6 +102,8 @@ services:
       HOME: /tmp
       # AGENTOPS_DB=agentops_dev für Fixture-Tests gegen eine Wegwerf-Datenbank, ohne den echten Log zu berühren
       ConnectionStrings__AgentOps: Host=postgres;Database=${AGENTOPS_DB:-agentops};Username=agentops;Password=${AGENTOPS_PASSWORD}
+      # Leer = /api antwortet 503. Nie offen.
+      Api__Token: ${API_TOKEN:-}
       OpenClaw__StatePath: /openclaw/state/openclaw.sqlite
       OpenClaw__GatewayUrl: ws://host.docker.internal:18789
       OpenClaw__PollSeconds: "5"

@@ -1,0 +1,110 @@
+{
+  "uid": "agentops",
+  "title": "Agent-Ops",
+  "description": "Die drei Fragen aus P3: Welche Flows warten auf mich? Was hat Agent X diese Woche gekostet? Warum ist Flow Y stehen geblieben?",
+  "tags": ["agentops"],
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-7d", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Wartet auf mich — offene Gates",
+      "description": "Flows mit gate_open. Freigabe passiert im Orchestrator, nicht hier (§11).",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "agentops-pg" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select flow_id, stage, open_approval_id as approval, updated_at as seit from readmodel.flows where gate_open order by updated_at"
+        }
+      ],
+      "options": { "showHeader": true, "sortBy": [] },
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Stehen geblieben",
+      "description": "status in failed, lost, blocked. Der Grund steht im Log: /api/flows/{id}/events.",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "agentops-pg" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select flow_id, stage, status, revision, updated_at as seit from readmodel.flows where status in ('failed','lost','blocked') order by updated_at desc"
+        }
+      ],
+      "options": { "showHeader": true, "sortBy": [] },
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Flows nach Status",
+      "gridPos": { "x": 0, "y": 8, "w": 8, "h": 6 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "agentops-pg" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select status, count(*)::int as anzahl from readmodel.flows group by status order by 2 desc"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^anzahl$/", "values": true },
+        "textMode": "value_and_name",
+        "colorMode": "none",
+        "graphMode": "none",
+        "orientation": "horizontal"
+      },
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Kosten pro Modell (USD, je Tag)",
+      "description": "openclaw.cost.usd aus dem OTel-Exporter, über Prometheus. Leer, bis ein Orchestrator exportiert.",
+      "gridPos": { "x": 8, "y": 8, "w": 16, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model) (increase({__name__=~\"openclaw_cost_usd(_total)?\"}[1d]))",
+          "legendFormat": "{{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "currencyUSD", "custom": { "drawStyle": "bars", "fillOpacity": 60 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Alle Flows",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 9 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "agentops-pg" },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select flow_id, stage, status, gate_open, revision, updated_at from readmodel.flows order by updated_at desc"
+        }
+      ],
+      "options": { "showHeader": true, "sortBy": [] },
+      "fieldConfig": { "defaults": {}, "overrides": [] }
+    }
+  ]
+}

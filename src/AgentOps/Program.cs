@@ -74,11 +74,8 @@ if (args.Contains("--check"))
     return 0;
 }
 
-// Der einzige offene Endpunkt. Genau ein Bit (Blueprint §6).
-app.MapGet("/health", () => Results.Text("ok"));
-
-// Alles Weitere hinter Bearer-Token (P2). Bis dahin: 501, damit nichts versehentlich offen ist.
-app.MapGet("/flows", () => Results.StatusCode(StatusCodes.Status501NotImplemented));
+// /health offen (genau ein Bit, Blueprint §6), /api/* hinter Bearer-Token (P2). Siehe Api.cs.
+Api.Map(app);
 
 app.Run();
 return 0;
