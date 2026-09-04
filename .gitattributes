@@ -1,0 +1,16 @@
+# Ziel ist ein Linux-Server. Alles Textuelle mit LF auschecken — auch auf Windows —
+# sonst bricht 01-roles.sh im Postgres-Container mit "bad interpreter" ab.
+* text=auto eol=lf
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.json text eol=lf
+*.jsonl text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf
+
+# Binär
+*.png binary
+*.sqlite binary

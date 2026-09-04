@@ -1,0 +1,906 @@
+<title>Agent-Ops Kontrollebene</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#F1F3F5;
+  --surface:#FFFFFF;
+  --surface-2:#E9ECEF;
+  --ink:#1A1E25;
+  --ink-2:#49515D;
+  --ink-3:#79818E;
+  --rule:#D6DBE1;
+  --rule-strong:#B6BDC6;
+  --brass:#8A5E12;
+  --brass-soft:#F0E4CC;
+  --teal:#1C6A61;
+  --teal-soft:#D8E9E6;
+  --clay:#97402C;
+  --clay-soft:#F4E0DA;
+  --f-display:"Archivo","Helvetica Neue",Arial,sans-serif;
+  --f-body:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --ground:#14171C;
+    --surface:#1B1F26;
+    --surface-2:#232830;
+    --ink:#E5E9EE;
+    --ink-2:#A6AEBA;
+    --ink-3:#747C89;
+    --rule:#2B313A;
+    --rule-strong:#3D4550;
+    --brass:#D2A153;
+    --brass-soft:#3A2F1B;
+    --teal:#4FB2A4;
+    --teal-soft:#16302D;
+    --clay:#CE7259;
+    --clay-soft:#37211B;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#14171C;
+  --surface:#1B1F26;
+  --surface-2:#232830;
+  --ink:#E5E9EE;
+  --ink-2:#A6AEBA;
+  --ink-3:#747C89;
+  --rule:#2B313A;
+  --rule-strong:#3D4550;
+  --brass:#D2A153;
+  --brass-soft:#3A2F1B;
+  --teal:#4FB2A4;
+  --teal-soft:#16302D;
+  --clay:#CE7259;
+  --clay-soft:#37211B;
+  color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+body{
+  background:var(--ground);
+  color:var(--ink);
+  font-family:var(--f-body);
+  font-size:17px;
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1040px;margin:0 auto;padding:0 28px 96px}
+
+/* ---------- masthead ---------- */
+.mast{padding:64px 0 0}
+.eyebrow{
+  font-family:var(--f-mono);font-size:11.5px;font-weight:500;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--brass);
+  margin:0 0 20px;
+}
+.mast h1{
+  font-family:var(--f-display);font-weight:700;
+  font-size:clamp(2.1rem,5.2vw,3.35rem);line-height:1.04;
+  letter-spacing:-.022em;margin:0;max-width:20ch;text-wrap:balance;
+}
+.standfirst{
+  font-size:1.16rem;line-height:1.55;color:var(--ink-2);
+  max-width:60ch;margin:22px 0 0;
+}
+.meta{
+  display:flex;flex-wrap:wrap;gap:10px 28px;
+  font-family:var(--f-mono);font-size:11.5px;letter-spacing:.05em;
+  color:var(--ink-3);text-transform:uppercase;
+  margin:34px 0 0;padding:16px 0 0;border-top:1px solid var(--rule);
+}
+.meta b{color:var(--ink-2);font-weight:500}
+
+/* ---------- toc ---------- */
+.toc{
+  margin:44px 0 0;padding:22px 24px;background:var(--surface);
+  border:1px solid var(--rule);border-radius:3px;
+}
+.toc h2{
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.16em;
+  text-transform:uppercase;color:var(--ink-3);margin:0 0 14px;font-weight:500;
+}
+.toc ol{margin:0;padding:0;list-style:none;
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:7px 30px}
+.toc a{
+  font-family:var(--f-mono);font-size:12.5px;color:var(--ink-2);
+  text-decoration:none;display:flex;gap:11px;padding:3px 0;
+  border-bottom:1px solid transparent;
+}
+.toc a:hover{color:var(--brass);border-bottom-color:var(--rule)}
+.toc a i{color:var(--ink-3);font-style:normal;min-width:1.9em}
+
+/* ---------- structure ---------- */
+.part{margin:78px 0 0;padding:0 0 4px;border-top:2px solid var(--ink)}
+.part-no{
+  font-family:var(--f-mono);font-size:11.5px;font-weight:600;letter-spacing:.16em;
+  color:var(--brass);text-transform:uppercase;margin:14px 0 6px;
+}
+.part h2{
+  font-family:var(--f-display);font-weight:600;font-size:clamp(1.5rem,3.4vw,2.05rem);
+  letter-spacing:-.016em;line-height:1.14;margin:0 0 8px;max-width:24ch;text-wrap:balance;
+}
+.part p{color:var(--ink-2);max-width:64ch;margin:0}
+
+section{margin:46px 0 0;max-width:68ch}
+section h3{
+  font-family:var(--f-display);font-weight:600;font-size:1.24rem;
+  letter-spacing:-.01em;line-height:1.28;margin:0 0 14px;text-wrap:balance;
+  position:relative;
+}
+section h3 .num{
+  font-family:var(--f-mono);font-size:12px;font-weight:500;color:var(--ink-3);
+  letter-spacing:.04em;display:inline-block;margin-right:10px;
+}
+@media(min-width:1140px){
+  section h3 .num{position:absolute;left:-72px;top:.42em;margin:0;text-align:right;width:56px}
+}
+p{margin:0 0 18px;max-width:66ch}
+section > p:last-child{margin-bottom:0}
+strong{font-weight:600;color:var(--ink)}
+em{font-style:italic}
+a{color:var(--brass)}
+code{
+  font-family:var(--f-mono);font-size:.855em;background:var(--surface-2);
+  padding:.1em .38em;border-radius:2px;color:var(--ink);
+}
+
+ul.plain{margin:0 0 20px;padding:0;list-style:none;display:flex;flex-direction:column;gap:11px;max-width:66ch}
+ul.plain li{padding-left:19px;position:relative}
+ul.plain li::before{
+  content:"";position:absolute;left:0;top:.62em;width:7px;height:1.5px;background:var(--rule-strong);
+}
+
+/* ---------- callout ---------- */
+.note{
+  margin:26px 0;padding:18px 22px;background:var(--surface);
+  border-left:2px solid var(--brass);border-radius:0 3px 3px 0;max-width:66ch;
+}
+.note.warn{border-left-color:var(--clay)}
+.note.ok{border-left-color:var(--teal)}
+.note-k{
+  font-family:var(--f-mono);font-size:10.5px;font-weight:600;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--brass);margin:0 0 8px;
+}
+.note.warn .note-k{color:var(--clay)}
+.note.ok .note-k{color:var(--teal)}
+.note p{margin:0;font-size:.955rem;line-height:1.58;color:var(--ink-2);max-width:none}
+.note p + p{margin-top:11px}
+
+/* ---------- figures ---------- */
+figure{margin:36px 0;padding:0;width:min(100%,1040px)}
+@media(min-width:1140px){figure{width:1040px;margin-left:calc(50% - 520px)}}
+.fig-in{
+  background:var(--surface);border:1px solid var(--rule);border-radius:3px;
+  padding:26px 26px 20px;overflow-x:auto;
+}
+figure svg{display:block;width:100%;min-width:640px;height:auto;color:var(--ink-2)}
+figcaption{
+  font-family:var(--f-mono);font-size:11.5px;line-height:1.6;color:var(--ink-3);
+  margin:11px 2px 0;max-width:88ch;
+}
+figcaption b{color:var(--ink-2);font-weight:500}
+figcaption em{color:var(--ink-2);font-style:italic}
+.legend{
+  display:flex;flex-wrap:wrap;gap:8px 22px;margin:16px 2px 0;
+  font-family:var(--f-mono);font-size:11px;color:var(--ink-3);letter-spacing:.03em;
+}
+.legend span{display:flex;align-items:center;gap:7px}
+.legend i{width:11px;height:11px;border-radius:2px;display:block;border:1.5px solid;flex:none}
+.lg-model{background:var(--brass-soft);border-color:var(--brass)}
+.lg-code{background:var(--teal-soft);border-color:var(--teal)}
+.lg-off{background:var(--surface-2);border-color:var(--rule-strong)}
+
+/* ---------- tables ---------- */
+.tbl-wrap{overflow-x:auto;margin:26px 0;max-width:68ch}
+table{border-collapse:collapse;width:100%;min-width:520px;font-size:.9rem}
+th{
+  font-family:var(--f-mono);font-size:10.5px;font-weight:600;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-3);text-align:left;
+  padding:0 16px 9px 0;border-bottom:1px solid var(--rule-strong);
+}
+td{
+  padding:11px 16px 11px 0;border-bottom:1px solid var(--rule);
+  vertical-align:top;color:var(--ink-2);font-variant-numeric:tabular-nums;
+}
+td:first-child{color:var(--ink);width:1%;white-space:nowrap}
+td code{font-size:.83em;background:none;padding:0;color:var(--ink)}
+.t-yes{color:var(--teal);font-family:var(--f-mono);font-size:.82em}
+.t-no{color:var(--clay);font-family:var(--f-mono);font-size:.82em}
+td b{color:var(--ink);font-weight:600}
+
+/* ---------- code ---------- */
+pre{
+  margin:24px 0;padding:19px 22px;background:var(--surface);
+  border:1px solid var(--rule);border-radius:3px;
+  overflow-x:auto;font-family:var(--f-mono);font-size:12.5px;line-height:1.72;
+  color:var(--ink-2);max-width:68ch;
+}
+pre b{color:var(--ink);font-weight:500}
+pre i{color:var(--ink-3);font-style:normal}
+pre em{color:var(--brass);font-style:normal}
+
+/* ---------- phases ---------- */
+.phases{display:flex;flex-direction:column;gap:0;margin:28px 0;max-width:68ch;
+  border-top:1px solid var(--rule-strong)}
+.ph{display:grid;grid-template-columns:52px 1fr 96px;gap:20px;
+  padding:17px 0;border-bottom:1px solid var(--rule);align-items:baseline}
+.ph-n{font-family:var(--f-mono);font-size:11px;font-weight:600;color:var(--brass);letter-spacing:.1em}
+.ph-t{font-family:var(--f-display);font-weight:600;font-size:1rem;color:var(--ink);margin:0 0 5px}
+.ph-d{font-size:.92rem;color:var(--ink-2);margin:0;line-height:1.5;max-width:none}
+.ph-c{font-family:var(--f-mono);font-size:11px;color:var(--ink-3);text-align:right;
+  letter-spacing:.03em;font-variant-numeric:tabular-nums}
+
+footer{
+  margin:80px 0 0;padding:26px 0 0;border-top:1px solid var(--rule);
+  font-family:var(--f-mono);font-size:11.5px;line-height:1.85;color:var(--ink-3);
+  max-width:74ch;
+}
+footer a{color:var(--ink-2);text-decoration:none;border-bottom:1px solid var(--rule-strong)}
+footer a:hover{color:var(--brass)}
+
+a:focus-visible{outline:2px solid var(--brass);outline-offset:3px;border-radius:2px}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Architektur-Notiz · Agent-Ops</p>
+  <h1>Wie die Kontrollebene aufgebaut wird</h1>
+  <p class="standfirst">Erst die Mechanik: was ein Agent technisch ist, warum es mehrere sein müssen und warum solche Systeme ohne Aufzeichnung nicht betreibbar sind. Dann der konkrete Aufbau darüber — vier Ebenen, ein Event-Log, ein Gate.</p>
+  <div class="meta">
+    <span><b>Grundlage</b> &nbsp;Blueprint „agent-ops control plane“</span>
+    <span><b>Ausführung</b> &nbsp;OpenClaw Gateway</span>
+    <span><b>Eigenanteil</b> &nbsp;ein Dienst, zwei Streams</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <h2>Inhalt</h2>
+  <ol>
+    <li><a href="#s1"><i>§1</i> Das Modell hat kein Gedächtnis</a></li>
+    <li><a href="#s2"><i>§2</i> Ein Agent ist eine Schleife</a></li>
+    <li><a href="#s3"><i>§3</i> Die Soul ist ein Prompt, keine Grenze</a></li>
+    <li><a href="#s4"><i>§4</i> Warum mehrere Agenten</a></li>
+    <li><a href="#s5"><i>§5</i> Orchestrator: Modell oder Code</a></li>
+    <li><a href="#s6"><i>§6</i> Warum Aufzeichnung Pflicht ist</a></li>
+    <li><a href="#s7"><i>§7</i> Die vier Ebenen</a></li>
+    <li><a href="#s8"><i>§8</i> Was in den Log gehört</a></li>
+    <li><a href="#s9"><i>§9</i> Das Event-Schema</a></li>
+    <li><a href="#s10"><i>§10</i> Der Weg eines Events</a></li>
+    <li><a href="#s11"><i>§11</i> Stage-Machine und Gate</a></li>
+    <li><a href="#s12"><i>§12</i> Read-only und der Ausgang</a></li>
+    <li><a href="#s13"><i>§13</i> Bauplan</a></li>
+    <li><a href="#s14"><i>§14</i> Tag 1</a></li>
+    <li><a href="#s15"><i>§15</i> Zielumgebung srv1</a></li>
+  </ol>
+</nav>
+
+<!-- ============ TEIL I ============ -->
+<div class="part">
+  <p class="part-no">Teil I</p>
+  <h2>Die Mechanik darunter</h2>
+  <p>Fast jede Fehlentscheidung beim Bau solcher Systeme geht auf eine von drei Annahmen zurück: das Modell merke sich etwas, das Modell führe etwas aus, oder der System-Prompt sei eine Grenze. Alle drei sind falsch, und alles Weitere folgt daraus.</p>
+</div>
+
+<section id="s1">
+  <h3><span class="num">§1</span>Das Modell hat kein Gedächtnis</h3>
+  <p>Ein Sprachmodell ist eine reine Funktion: Text rein, Text raus. Zwischen zwei Aufrufen bleibt nichts zurück — kein Zustand, keine Variablen, keine Erinnerung an den vorigen Aufruf. Was wie ein Gespräch aussieht, ist in Wahrheit dasselbe, immer länger werdende Dokument, das bei jeder Runde vollständig neu übertragen wird.</p>
+  <p>Das ist keine Spitzfindigkeit, sondern die Ursache einer der beiden Zahlen, die dein Cockpit später anzeigen soll. Wenn ein Lauf <code>n</code> Runden hat und jede Runde rund <code>k</code> Tokens hinzufügt, überträgt Runde <code>i</code> etwa <code>i·k</code> Tokens. Über den ganzen Lauf summiert sind das ungefähr <code>k·n²/2</code> — die Kosten eines Agentenlaufs wachsen also <strong>quadratisch mit seiner Länge</strong>, nicht linear. Ein Agent, der sich verrennt und dreißig statt zehn Runden braucht, kostet nicht das Dreifache, sondern grob das Neunfache.</p>
+  <p>Und weil das Kontextfenster endlich ist, ist „was der Agent gerade weiß“ eine Ressource, die verwaltet werden muss. Genau das ist der Grund, aus dem es überhaupt mehrere Agenten gibt (§4).</p>
+</section>
+
+<section id="s2">
+  <h3><span class="num">§2</span>Ein Agent ist eine Schleife um dieses Modell</h3>
+  <p>Der Agent ist nicht das Modell. Der Agent ist ein ganz gewöhnliches Programm — der <em>Harness</em> —, das drei Dinge zusammenhält: den System-Prompt, den bisherigen Verlauf und eine Liste verfügbarer Werkzeuge. Dann läuft es im Kreis.</p>
+</section>
+
+<figure>
+  <div class="fig-in">
+    <svg viewBox="0 0 900 300" role="img" aria-label="Die Agentenschleife: der Kontext geht an das Modell, das Modell schlägt einen Tool-Call vor, der Harness führt ihn aus und hängt das Ergebnis wieder an den Kontext an.">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="420" y="34" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12" fill="currentColor">kein Tool-Call → Antwort steht, Schleife endet</text>
+      <line x1="420" y1="110" x2="420" y2="48" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ar)"/>
+
+      <rect x="50" y="110" width="180" height="70" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+      <text x="140" y="139" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="var(--ink)">Kontext</text>
+      <text x="140" y="159" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-2)">Soul · Verlauf · Tools</text>
+
+      <rect x="330" y="110" width="180" height="70" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.5"/>
+      <text x="420" y="139" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="var(--ink)">Modell</text>
+      <text x="420" y="159" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-2)">zustandslos</text>
+
+      <rect x="610" y="110" width="180" height="70" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+      <text x="700" y="139" text-anchor="middle" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="var(--ink)">Harness</text>
+      <text x="700" y="159" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-2)">führt aus — dein Code</text>
+
+      <line x1="230" y1="145" x2="322" y2="145" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+      <text x="276" y="136" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor">Prompt</text>
+      <line x1="510" y1="145" x2="602" y2="145" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+      <text x="556" y="136" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor">Tool-Call</text>
+
+      <path d="M 700 180 L 700 248 L 140 248 L 140 188" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+      <text x="420" y="270" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">Ergebnis wird an den Verlauf angehängt — der Kontext wächst mit jeder Runde</text>
+    </svg>
+  </div>
+  <div class="legend">
+    <span><i class="lg-model"></i> Modell entscheidet — nicht-deterministisch, kostet Tokens</span>
+    <span><i class="lg-code"></i> Dein Code — deterministisch, testbar</span>
+  </div>
+  <figcaption><b>Abb. 1 — Die Agentenschleife.</b> Das Modell erzeugt nur einen <em>Vorschlag</em> in Form von strukturiertem JSON. Ausgeführt wird er im Harness. Der Kontrollpunkt liegt damit vollständig in deinem Code, nie im Modell.</figcaption>
+</figure>
+
+<section>
+  <p>Der letzte Satz der Bildunterschrift ist der wichtigste in diesem Dokument. Ein Modell kann nichts löschen, nichts deployen und nichts nach außen schicken. Es kann nur einen Text produzieren, der wie ein Werkzeugaufruf aussieht. Ob daraus eine Handlung wird, entscheidet ausschließlich der Harness — und deshalb sind Guardrails überhaupt möglich.</p>
+</section>
+
+<section id="s3">
+  <h3><span class="num">§3</span>Die „Soul“ ist ein Prompt, keine Grenze</h3>
+  <p>Was der Blueprint Soul nennt, ist technisch der System-Prompt: die ersten Tokens im Kontext, die Rolle, Ziel, Ton, Ausgabeformat und Grenzen beschreiben. Kein Objekt, kein Prozess, kein Zustand im Speicher. Bei jedem einzelnen Aufruf wird derselbe Text wieder mitgeschickt.</p>
+  <p>Er wirkt, indem er Wahrscheinlichkeiten verschiebt — er garantiert nichts. Das hat eine harte Konsequenz für den Betrieb:</p>
+  <div class="note warn">
+    <p class="note-k">Die Regel, an der alles hängt</p>
+    <p>Ein System-Prompt ist keine Zugriffskontrolle. <strong>„Du darfst nicht auf Produktion deployen“ ist eine Bitte.</strong> Die Kontrolle besteht darin, dem Agenten das Deploy-Werkzeug gar nicht erst in die Tool-Liste zu legen.</p>
+    <p>Alles, was in §12 über Read-only steht, folgt aus diesem einen Satz. Guardrails gehören in den Harness und in die Rechtevergabe, nicht in den Prompt.</p>
+  </div>
+</section>
+
+<section id="s4">
+  <h3><span class="num">§4</span>Warum es mehrere Agenten sein müssen</h3>
+  <p>Nicht wegen Teamwork, und nicht weil sich Rollen hübsch anfühlen. Es gibt drei nüchterne technische Gründe, und alle drei sind Ausprägungen desselben Problems aus §1:</p>
+  <ul class="plain">
+    <li><strong>Das Kontextfenster ist endlich — und die Qualität fällt, lange bevor es voll ist.</strong> Ein Agent mit 150k Tokens Verlauf trifft schlechtere Entscheidungen als derselbe Agent mit 15k, auch wenn beides technisch „passt“.</li>
+    <li><strong>Werkzeugauswahl skaliert schlecht.</strong> Je länger die Tool-Liste, desto häufiger greift das Modell zum falschen Werkzeug. Fünf Agenten mit je fünf Tools schlagen einen Agenten mit fünfundzwanzig.</li>
+    <li><strong>Fehler-Isolation.</strong> Ein Agent, der sich in eine Sackgasse arbeitet, verbrennt nur seinen eigenen Kontext. Ohne Trennung vergiftet dieselbe Sackgasse jede weitere Entscheidung im Lauf.</li>
+  </ul>
+  <p>Das ist genau das „besser scopen“, um das es dir von Anfang an ging. Multi-Agent ist in erster Linie ein Werkzeug zur Kontextverwaltung — die Rollenmetapher ist nur die Benutzeroberfläche dafür.</p>
+</section>
+
+<section id="s5">
+  <h3><span class="num">§5</span>Der Orchestrator: ein Modell oder Code</h3>
+  <p>Wenn die Arbeit auf mehrere Agenten verteilt ist, muss jemand entscheiden, wer als nächstes dran ist. Dafür gibt es genau zwei Bauarten, und die Wahl bestimmt Kosten, Reproduzierbarkeit und Testbarkeit des gesamten Systems.</p>
+</section>
+
+<figure>
+  <div class="fig-in">
+    <svg viewBox="0 0 900 350" role="img" aria-label="Vergleich: links ein Supervisor-Modell, bei dem jede Rückgabe über einen zusätzlichen Modellaufruf läuft; rechts ein Scheduler in Code, bei dem genau diese Rückkanten fehlen.">
+      <defs>
+        <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+        <marker id="ar2c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--clay)"/>
+        </marker>
+      </defs>
+
+      <line x1="450" y1="14" x2="450" y2="336" stroke="var(--rule-strong)" stroke-width="1"/>
+
+      <text x="30" y="26" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" letter-spacing="1.4" fill="var(--brass)">A — SUPERVISOR-MODELL</text>
+
+      <rect x="140" y="52" width="150" height="52" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.5"/>
+      <text x="215" y="76" text-anchor="middle" font-family="Archivo, sans-serif" font-size="13" font-weight="600" fill="var(--ink)">Supervisor</text>
+      <text x="215" y="93" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-2)">ein Modell</text>
+
+      <rect x="35" y="196" width="106" height="48" rx="3" fill="var(--surface)" stroke="var(--brass)" stroke-width="1.3"/>
+      <text x="88" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent A</text>
+      <rect x="162" y="196" width="106" height="48" rx="3" fill="var(--surface)" stroke="var(--brass)" stroke-width="1.3"/>
+      <text x="215" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent B</text>
+      <rect x="289" y="196" width="106" height="48" rx="3" fill="var(--surface)" stroke="var(--brass)" stroke-width="1.3"/>
+      <text x="342" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent C</text>
+
+      <line x1="196" y1="104" x2="96" y2="188" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar2)"/>
+      <line x1="215" y1="104" x2="215" y2="188" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar2)"/>
+      <line x1="234" y1="104" x2="334" y2="188" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar2)"/>
+      <path d="M 88 196 L 88 158 L 150 128 L 194 110" fill="none" stroke="var(--clay)" stroke-width="1.7" marker-end="url(#ar2c)"/>
+      <path d="M 342 196 L 342 158 L 280 128 L 236 110" fill="none" stroke="var(--clay)" stroke-width="1.7" marker-end="url(#ar2c)"/>
+
+      <text x="215" y="288" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--clay)">jede Rückgabe = 1 zusätzlicher LLM-Call</text>
+      <text x="215" y="308" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">Kontext des Supervisors wächst mit</text>
+      <text x="215" y="328" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">zwei Läufe, zwei Reihenfolgen</text>
+
+      <text x="480" y="26" font-family="IBM Plex Mono, monospace" font-size="11.5" font-weight="600" letter-spacing="1.4" fill="var(--teal)">B — TASK-GRAPH IN CODE</text>
+
+      <rect x="590" y="52" width="150" height="52" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+      <text x="665" y="76" text-anchor="middle" font-family="Archivo, sans-serif" font-size="13" font-weight="600" fill="var(--ink)">Scheduler</text>
+      <text x="665" y="93" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-2)">Code, kein Modell</text>
+
+      <rect x="485" y="196" width="106" height="48" rx="3" fill="var(--surface)" stroke="var(--brass)" stroke-width="1.3"/>
+      <text x="538" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent A</text>
+      <rect x="612" y="196" width="106" height="48" rx="3" fill="var(--surface)" stroke="var(--brass)" stroke-width="1.3"/>
+      <text x="665" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent B</text>
+      <rect x="739" y="196" width="106" height="48" rx="3" fill="var(--surface)" stroke="var(--brass)" stroke-width="1.3"/>
+      <text x="792" y="225" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent C</text>
+
+      <line x1="646" y1="104" x2="546" y2="188" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar2)"/>
+      <line x1="665" y1="104" x2="665" y2="188" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar2)"/>
+      <line x1="684" y1="104" x2="784" y2="188" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar2)"/>
+
+      <text x="665" y="288" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--teal)">0 Tokens für Koordination</text>
+      <text x="665" y="308" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">Reihenfolge ist testbar</text>
+      <text x="665" y="328" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">nur so schlau wie du ihn schreibst</text>
+    </svg>
+  </div>
+  <figcaption><b>Abb. 2 — Der Unterschied sind die roten Rückkanten.</b> In B fehlen sie: der Scheduler fragt kein Modell, wer als nächstes dran ist. Alles andere im Bild ist identisch. Bei <em>m</em> Übergaben kostet A genau <em>m</em> zusätzliche Modellaufrufe, deren Kontext obendrein nach §1 mitwächst.</figcaption>
+</figure>
+
+<section>
+  <p>In der Praxis läuft es auf einen Hybrid hinaus, und das ist auch, was OpenClaws Task Flow tut: <strong>ein Modell zerlegt die Aufgabe einmal am Anfang, Code führt die Reihenfolge aus.</strong> Du bezahlst die Flexibilität dort, wo sie etwas bringt — bei der Zerlegung —, und nicht bei jeder einzelnen Übergabe.</p>
+</section>
+
+<section id="s6">
+  <h3><span class="num">§6</span>Warum Aufzeichnung keine Kür ist</h3>
+  <p>Zwei identische Läufe desselben Auftrags liefern unterschiedliche Ergebnisse. Das ist kein Fehler, sondern die Betriebsart. Daraus folgen die drei Gründe, aus denen der Blueprint überhaupt existiert:</p>
+  <ul class="plain">
+    <li><strong>Debuggen durch Nachstellen funktioniert nicht.</strong> Du kannst einen fehlgeschlagenen Lauf nicht reproduzieren. Du kannst nur nachlesen, was tatsächlich passiert ist — wenn du es aufgezeichnet hast.</li>
+    <li><strong>Kosten sind unsichtbar und verteilt.</strong> Sie entstehen pro Token über hunderte Einzelaufrufe. Ohne Zuordnung zu Agent, Aufgabe und Modell kennst du am Monatsende nur die Gesamtsumme und weißt nicht, wer sie verursacht hat.</li>
+    <li><strong>Freigaben brauchen einen Nachweis.</strong> Sobald etwas Richtung Produktion zeigt, musst du belegen können, wer wann was freigegeben hat — und dass es nicht nachträglich verändert wurde.</li>
+  </ul>
+  <p>Punkt eins und zwei erschlägt Standard-Tracing. Nur Punkt drei verlangt wirklich einen unveränderlichen Log. Diese Unterscheidung trägt den gesamten Aufbau in Teil II.</p>
+</section>
+
+<!-- ============ TEIL II ============ -->
+<div class="part">
+  <p class="part-no">Teil II</p>
+  <h2>Der Aufbau</h2>
+  <p>Vier Ebenen mit einer klaren Trennlinie in der Mitte. Zwei davon installierst du fertig, eine schreibst du selbst, und die vierte ist die Oberfläche.</p>
+</div>
+
+<section id="s7">
+  <h3><span class="num">§7</span>Die vier Ebenen</h3>
+  <p>Die neun Domains aus dem Blueprint kollabieren auf drei Systeme. Entscheidend ist die Grenze zwischen <em>Telemetrie</em> und <em>Wahrheit</em>: links steht alles, was du jederzeit neu ableiten kannst, rechts nur das, was unwiederbringlich verloren wäre.</p>
+</section>
+
+<figure>
+  <div class="fig-in">
+    <svg viewBox="0 0 900 440" role="img" aria-label="Vier Ebenen: OpenClaw als Ausführung oben, darunter nebeneinander OTel Collector mit Prometheus für Telemetrie und der eigene agent-ops-Dienst für den Entscheidungs-Log, darunter Grafana als gemeinsame Oberfläche.">
+      <defs>
+        <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <text x="30" y="26" font-family="IBM Plex Mono, monospace" font-size="10.5" font-weight="600" letter-spacing="1.5" fill="var(--ink-3)">EBENE 1 · AUSFÜHRUNG</text>
+      <rect x="30" y="36" width="840" height="94" rx="3" fill="var(--surface-2)" stroke="var(--rule-strong)" stroke-width="1"/>
+      <rect x="52" y="58" width="160" height="50" rx="3" fill="var(--surface)" stroke="var(--ink-3)" stroke-width="1.4"/>
+      <text x="132" y="79" text-anchor="middle" font-family="Archivo, sans-serif" font-size="13" font-weight="600" fill="var(--ink)">OpenClaw</text>
+      <text x="132" y="96" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-2)">Gateway :18789</text>
+      <line x1="212" y1="83" x2="252" y2="83" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar3)"/>
+      <rect x="260" y="58" width="126" height="50" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.4"/>
+      <text x="323" y="79" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent · Plan</text>
+      <text x="323" y="96" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-2)">Soul + Modell</text>
+      <rect x="398" y="58" width="126" height="50" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.4"/>
+      <text x="461" y="79" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent · Code</text>
+      <text x="461" y="96" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-2)">Soul + Modell</text>
+      <rect x="536" y="58" width="126" height="50" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.4"/>
+      <text x="599" y="79" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Agent · Test</text>
+      <text x="599" y="96" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-2)">Soul + Modell</text>
+      <rect x="674" y="58" width="174" height="50" rx="3" fill="var(--surface)" stroke="var(--rule-strong)" stroke-width="1.2" stroke-dasharray="4 3"/>
+      <text x="761" y="87" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">weitere Souls …</text>
+
+      <line x1="230" y1="130" x2="230" y2="188" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar3)"/>
+      <text x="240" y="164" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor">OTLP · Traces, Tokens, Kosten</text>
+      <line x1="670" y1="130" x2="670" y2="188" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar3)"/>
+      <text x="680" y="164" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor">flow_runs (SQLite) · Approvals (WS)</text>
+
+      <text x="30" y="210" font-family="IBM Plex Mono, monospace" font-size="10.5" font-weight="600" letter-spacing="1.5" fill="var(--ink-3)">EBENE 2 · TELEMETRIE — ABLEITBAR</text>
+      <text x="470" y="210" font-family="IBM Plex Mono, monospace" font-size="10.5" font-weight="600" letter-spacing="1.5" fill="var(--teal)">EBENE 3 · WAHRHEIT — UNWIEDERBRINGLICH</text>
+      <rect x="30" y="220" width="410" height="102" rx="3" fill="var(--surface)" stroke="var(--rule-strong)" stroke-width="1.2"/>
+      <text x="52" y="249" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="var(--ink)">OTel Collector → Prometheus</text>
+      <text x="52" y="272" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-2)">openclaw.tokens · openclaw.cost.usd · Dauern</text>
+      <text x="52" y="291" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-2)">Retention erlaubt — jederzeit neu befüllbar</text>
+      <text x="52" y="312" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">installiert, kein Eigenbau · Tempo für Traces optional</text>
+
+      <rect x="470" y="220" width="400" height="102" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.6"/>
+      <text x="492" y="249" font-family="Archivo, sans-serif" font-size="14" font-weight="600" fill="var(--ink)">agent-ops</text>
+      <text x="492" y="272" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-2)">events (append-only) → Projektionen</text>
+      <text x="492" y="291" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-2)">Streams: task:*  ·  approval:*</text>
+      <text x="492" y="312" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--teal)">dein Code — Postgres, ~500 Zeilen</text>
+
+      <line x1="230" y1="322" x2="230" y2="372" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar3)"/>
+      <text x="240" y="353" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor">Prometheus-Datasource</text>
+      <line x1="670" y1="322" x2="670" y2="372" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar3)"/>
+      <text x="680" y="353" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="currentColor">Read-API, Bearer-Token</text>
+
+      <text x="30" y="394" font-family="IBM Plex Mono, monospace" font-size="10.5" font-weight="600" letter-spacing="1.5" fill="var(--ink-3)">EBENE 4 · SICHT</text>
+      <rect x="30" y="402" width="840" height="32" rx="3" fill="var(--surface-2)" stroke="var(--rule-strong)" stroke-width="1"/>
+      <text x="450" y="423" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">Grafana — eine Scheibe Glas  ·  später optional Backstage als Portal</text>
+    </svg>
+  </div>
+  <div class="legend">
+    <span><i class="lg-model"></i> Modell im Spiel</span>
+    <span><i class="lg-code"></i> Dein Code</span>
+    <span><i class="lg-off"></i> Fertig installiert</span>
+  </div>
+  <figcaption><b>Abb. 3 — Die Trennlinie in der Mitte ist die eigentliche Entwurfsentscheidung.</b> Beide Ebenen speisen sich aus OpenClaw, aber nur rechts wird nie etwas überschrieben oder gelöscht. Links darf alles eine Aufbewahrungsfrist haben.</figcaption>
+</figure>
+
+<section>
+  <p><strong>Wo das Scoping passiert.</strong> Die Aufteilung eines Projekts in Agenten — je Schritt eine Soul, ein Modell, eine kurze Tool-Liste — ist Konfiguration in Ebene 1, nicht im Cockpit. In OpenClaw ist das ein Workflow aus Schritten, jeder mit eigenem Agenten; Abb. 5 zeigt die Folge aus dem Blueprint. Der Stream <code>task:*</code> ist nur das Spiegelbild davon. Daraus folgt eine nützliche Eigenschaft des Entwurfs: <strong>der Connector ist das einzige Stück, das OpenClaw kennt.</strong> Wechselst du den Orchestrator, schreibst du einen anderen Connector — Log, Projektor, API und Grafana bleiben unverändert.</p>
+</section>
+
+<section id="s8">
+  <h3><span class="num">§8</span>Was in den Log gehört — und was nicht</h3>
+  <p>Der Blueprint wirft alles in eine Tabelle: <code>CommitLanded</code> genauso wie <code>ResourceObserved</code> und <code>ApprovalGranted</code>. Das ist der Punkt, an dem event-sourced Systeme kippen — nicht konzeptionell, sondern schlicht am Volumen. Ein Cluster-Poll alle 30 Sekunden über zwanzig Ressourcen schreibt rund 58.000 Zeilen am Tag, und keine davon enthält Information, die das Cluster nicht selbst noch hätte.</p>
+  <p>Die Regel ist einfach: <strong>In den unveränderlichen Log kommt nur, was verloren wäre, wenn du es nicht aufschreibst.</strong></p>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>Ereignis</th><th>Quelle hat es noch?</th><th>Wohin damit</th></tr></thead>
+      <tbody>
+        <tr><td><code>CommitLanded</code></td><td class="t-yes">ja — git</td><td>Projektion, jederzeit neu ableitbar</td></tr>
+        <tr><td><code>ResourceObserved</code></td><td class="t-yes">ja — Cluster-API</td><td>Cache mit Retention</td></tr>
+        <tr><td><code>ModelUsed</code></td><td class="t-yes">ja — Prometheus</td><td>gar nicht erst selbst führen</td></tr>
+        <tr><td><code>StageEntered</code></td><td class="t-no">nein</td><td><b>Event-Log</b></td></tr>
+        <tr><td><code>ApprovalGranted</code></td><td class="t-no">nein</td><td><b>Event-Log</b></td></tr>
+        <tr><td><code>Halted</code></td><td class="t-no">nein</td><td><b>Event-Log</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Übrig bleiben zwei Streams: <code>task:*</code> und <code>approval:*</code>. Das ist der gesamte Eigenanteil an Domänenlogik — und genau deshalb ist der Dienst klein genug, um ihn in wenigen Tagen zu schreiben.</p>
+</section>
+
+<section id="s9">
+  <h3><span class="num">§9</span>Das Event-Schema</h3>
+  <p>Gegenüber dem Blueprint gestrichen: <code>stream_type</code>, das steckt schon im Präfix von <code>stream_id</code>. Ergänzt: <code>schema_version</code> — das Feld, dessen Fehlen in Monat sechs weh tut, wenn <code>StageEntered</code> sein drittes Payload-Feld bekommt. Das ist die Variante ohne Framework. Mit Marten schreibst du die Tabelle nicht selbst: Marten bringt sein eigenes Schema mit, Correlation und Causation sind eingebaut, der Rest wandert in Header. Die Felder bleiben dieselben, nur der Ort ändert sich.</p>
+  <pre><b>create table</b> events (
+  seq             <em>bigserial</em>     <i>-- global monoton; der Cursor des Projektors</i>
+  stream_id       <em>text</em>          <i>-- 'task:7f3a' | 'approval:7f3a'</i>
+  version         <em>int</em>           <i>-- pro Stream; unique(stream_id, version)</i>
+  type            <em>text</em>          <i>-- 'StageEntered' | 'ApprovalGranted'</i>
+  schema_version  <em>smallint</em>      <i>-- Upcasting-Pfad, ab Tag 1</i>
+  actor_type      <em>text</em>          <i>-- human | agent | automation</i>
+  actor_id        <em>text</em>
+  correlation_id  <em>text</em>          <i>-- die Task-ID; klammert den ganzen Lauf</i>
+  causation_id    <em>text</em>          <i>-- welches Event hat dieses ausgelöst</i>
+  idempotency_key <em>text</em>          <i>-- unique; z.B. flow_id + revision (§10)</i>
+  payload         <em>jsonb</em>
+  occurred_at     <em>timestamptz</em>   <i>-- wann es in der Welt geschah</i>
+  recorded_at     <em>timestamptz</em>   <i>-- wann du davon erfuhrst</i>
+);</pre>
+  <p>Und der Katalog für Tag 1. Fünf Typen reichen, weil beide Quellen aus §10 sauber darauf abbilden:</p>
+  <pre><b>StageEntered</b>     { stage, previous, revision }         <i>← flow_runs, JSON-Zustand</i>
+<b>Halted</b>           { status, revision }                  <i>← flow_runs; status ∈ failed | lost | blocked</i>
+<b>GatePending</b>      { approval_id, stage }                <i>← WebSocket, oder flow_runs.status = waiting</i>
+<b>ApprovalGranted</b>  { approval_id, actor_ref? }           <i>← WebSocket; actor_ref nur falls geliefert</i>
+<b>ApprovalDenied</b>   { approval_id, actor_ref?, reason? }  <i>← WebSocket</i></pre>
+  <p>Zu den vier Feldern, die man gern wegrationalisiert:</p>
+  <ul class="plain">
+    <li><code>correlation_id</code> ist die OpenClaw-Flow-ID. Damit klammerst du sämtliche Events eines Laufs zusammen. Der Sprung von hier in einen Trace (Tempo, falls du Traces später einschaltest) ist allerdings <em>nicht</em> gratis: OpenClaws OTel-Exporter lässt Session-Schlüssel aus Datenschutzgründen bewusst weg. Ob er eine Flow- oder Run-ID als „bounded identifier“ mitgibt, siehst du am ersten echten Trace. Falls nicht, bleibt Korrelation über Zeitfenster und Agent — brauchbar, aber kein Deep-Link.</li>
+    <li><code>causation_id</code> beantwortet „warum ist das passiert“ statt nur „was ist passiert“. Bei nicht-deterministischen Läufen (§6) ist das der Unterschied zwischen einer Zeitleiste und einer Erklärung.</li>
+    <li><code>occurred_at</code> gegen <code>recorded_at</code>: nach einem Gateway-Neustart holt der Connector Vergangenes nach. Ohne die Trennung springt deine Zeitleiste.</li>
+    <li><code>version</code> pro Stream gibt dir optimistische Nebenläufigkeit — zwei Schreiber auf denselben Task kollidieren sichtbar, statt sich still zu überschreiben.</li>
+  </ul>
+  <div class="note">
+    <p class="note-k">Zwei Betriebsregeln für diese eine Tabelle</p>
+    <p><strong>Sichern.</strong> Sie ist das Einzige im System, das sich nicht neu ableiten lässt. WAL-Archivierung oder mindestens ein täglicher Dump an einen zweiten Ort — eingerichtet, bevor der erste echte Approval drinsteht.</p>
+    <p><strong>Keine Personen im Log.</strong> Append-only verträgt sich nicht mit Löschpflichten. <code>actor_id</code> ist deshalb ein Pseudonym; die Zuordnung zur Person liegt in einer normalen, löschbaren Tabelle daneben. Wird sie gelöscht, bleibt der Log vollständig und sagt nur noch „jemand“.</p>
+  </div>
+</section>
+
+<section id="s10">
+  <h3><span class="num">§10</span>Der Weg eines Events</h3>
+  <p>Fünf Stationen, und keine kennt die nächste. Der Connector weiß nichts von Projektionen, der Projektor nichts von der API.</p>
+  <p>Der Connector liest zwei Quellen. Die Wahrheit ist OpenClaws eigene Datei <code>~/.openclaw/state/openclaw.sqlite</code>, Tabelle <code>flow_runs</code>: pro Flow ein Status aus acht festen Werten, ein JSON-Zustand mit deinen Schritten und ein Revisionszähler, der bei jeder Änderung hochzählt. Der Connector pollt sie und emittiert für jede neue Revision genau ein Event — <code>flow_id + revision</code> ist damit der Idempotenzschlüssel, geschenkt. Die zweite Quelle ist das Gateway per WebSocket (<code>sessions.messages.subscribe</code> mit <code>includeApprovals</code>, braucht den Scope <code>operator.approvals</code>): sie liefert Freigabe-Ereignisse sofort statt beim nächsten Poll. Fällt die Verbindung aus, holt der nächste SQLite-Durchlauf alles nach. <strong>Die Datei ist die Wahrheit, der Socket nur der Beschleuniger.</strong> Zwei Konsequenzen: der Connector läuft auf demselben Host wie OpenClaw, weil er die Datei braucht — und er öffnet sie strikt lesend (<code>mode=ro</code>, Busy-Timeout gesetzt), damit er OpenClaws Schreibzugriffe nie blockiert. Im Container heißt das: OpenClaws State-Verzeichnis als Volume, aber nicht als <code>:ro</code>-Mount — SQLite im WAL-Modus braucht auch zum Lesen Schreibzugriff auf die <code>-shm</code>-Datei. Die Read-only-Garantie liegt auf der Verbindung, nicht auf dem Dateisystem.</p>
+</section>
+
+<figure>
+  <div class="fig-in">
+    <svg viewBox="0 0 900 270" role="img" aria-label="Ein Event läuft vom OpenClaw Gateway über den Connector in den append-only Log, wird vom Projektor ab dem Cursor gelesen und in Read-Models geschrieben; ein gestrichelter Rebuild-Pfad führt vom Read-Model zurück zum Log.">
+      <defs>
+        <marker id="ar4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+        <marker id="ar4t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--teal)"/>
+        </marker>
+      </defs>
+
+      <rect x="20" y="72" width="118" height="58" rx="3" fill="var(--surface-2)" stroke="var(--rule-strong)" stroke-width="1.3"/>
+      <text x="79" y="97" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">OpenClaw</text>
+      <text x="79" y="114" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-3)">flow_runs · WS</text>
+
+      <rect x="186" y="72" width="118" height="58" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.4"/>
+      <text x="245" y="97" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Connector</text>
+      <text x="245" y="114" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-3)">nur lesen</text>
+
+      <rect x="352" y="52" width="152" height="98" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.8"/>
+      <text x="428" y="74" text-anchor="middle" font-family="Archivo, sans-serif" font-size="12.5" font-weight="600" fill="var(--ink)">events</text>
+      <line x1="368" y1="84" x2="488" y2="84" stroke="var(--teal)" stroke-width=".8" opacity=".5"/>
+      <text x="372" y="100" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-2)">1041  StageEntered</text>
+      <text x="372" y="117" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-2)">1042  ApprovalGranted</text>
+      <text x="372" y="138" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--teal)">append-only</text>
+
+      <rect x="552" y="72" width="118" height="58" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.4"/>
+      <text x="611" y="97" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">Projektor</text>
+      <text x="611" y="114" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--clay)">single writer</text>
+
+      <rect x="718" y="72" width="162" height="58" rx="3" fill="var(--surface-2)" stroke="var(--rule-strong)" stroke-width="1.3"/>
+      <text x="799" y="97" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--ink)">read models</text>
+      <text x="799" y="114" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-3)">wegwerfbar → API</text>
+
+      <line x1="138" y1="101" x2="178" y2="101" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar4)"/>
+      <line x1="304" y1="101" x2="344" y2="101" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar4)"/>
+      <line x1="504" y1="101" x2="544" y2="101" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar4)"/>
+      <line x1="670" y1="101" x2="710" y2="101" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar4)"/>
+
+      <text x="158" y="40" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor">poll · push</text>
+      <text x="324" y="40" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor">append</text>
+      <text x="524" y="40" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor">ab Cursor</text>
+      <text x="690" y="40" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor">upsert</text>
+      <line x1="158" y1="50" x2="158" y2="66" stroke="var(--rule-strong)" stroke-width="1"/>
+      <line x1="324" y1="50" x2="324" y2="66" stroke="var(--rule-strong)" stroke-width="1"/>
+      <line x1="524" y1="50" x2="524" y2="66" stroke="var(--rule-strong)" stroke-width="1"/>
+      <line x1="690" y1="50" x2="690" y2="66" stroke="var(--rule-strong)" stroke-width="1"/>
+
+      <path d="M 799 130 L 799 206 L 428 206 L 428 158" fill="none" stroke="var(--teal)" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#ar4t)"/>
+      <text x="613" y="228" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--teal)">--rebuild: read models leeren, Cursor auf 0, Log neu abspielen</text>
+      <text x="613" y="248" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">kommt dieselbe Sicht heraus, ist das Event-Modell ehrlich</text>
+    </svg>
+  </div>
+  <figcaption><b>Abb. 4 — Read-Models sind wegwerfbar, der Log ist es nicht.</b> Der Projektor muss genau einmal laufen (Advisory Lock in Postgres) — zwei Instanzen teilen sich einen Cursor und überspringen Events. Ab einigen Millionen Zeilen braucht der Rebuild einen Snapshot als Startpunkt und wird vom Alltagswerkzeug zum CI-Job. Der Connector hält als einzigen eigenen Zustand die zuletzt gesehene Revision pro Flow — und die steht schon im Log, nach einem Neustart liest er sie von dort zurück.</figcaption>
+</figure>
+
+<section id="s11">
+  <h3><span class="num">§11</span>Die Stage-Machine und das Gate</h3>
+  <p>Hier laufen zwei Ebenen übereinander, und man sollte sie nicht verwechseln. <strong>Unten</strong> OpenClaws eigener Flow-Status mit acht festen Werten — <code>queued</code>, <code>running</code>, <code>waiting</code>, <code>blocked</code>, <code>succeeded</code>, <code>failed</code>, <code>cancelled</code>, <code>lost</code>. <strong>Darüber</strong> die Schritte, die du selbst im Workflow definierst; <em>plan → code → test → review → ship</em> sind die Namen aus dem Blueprint, nicht OpenClaws. Sie liegen im JSON-Zustand des Flows, und dein Connector liest sie von dort.</p>
+  <p>Das Gate selbst gehört dem Orchestrator: ein Schritt mit <code>approval: required</code> hält den Flow in <code>waiting</code>, bis jemand in OpenClaw freigibt oder ablehnt. <strong>Dein Dienst hält das Gate nicht — er bezeugt es.</strong> Was dir kein Werkzeug abnimmt, ist nicht der Mechanismus, sondern der dauerhafte Beleg über alle Flows hinweg und die eine Sicht, in der alle offenen Gates gleichzeitig stehen. Ob die bereinigten Approval-Events den Freigebenden nennen, prüfst du am ersten echten Ereignis; falls nicht, speicherst du OpenClaws Approval-ID als Verweis und der Name steht in OpenClaws eigenem Audit.</p>
+</section>
+
+<figure>
+  <div class="fig-in">
+    <svg viewBox="0 0 900 260" role="img" aria-label="Stage-Machine: plan, code, test, review, dann ein menschliches Gate, dann ship. Test kann nach Halted abzweigen, review kann mit Findings zurück zu code springen.">
+      <defs>
+        <marker id="ar5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+        <marker id="ar5c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--clay)"/>
+        </marker>
+      </defs>
+
+      <rect x="20" y="86" width="112" height="56" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.4"/>
+      <text x="76" y="112" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">plan</text>
+      <text x="76" y="129" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-3)">Agent</text>
+
+      <rect x="170" y="86" width="112" height="56" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.4"/>
+      <text x="226" y="112" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">code</text>
+      <text x="226" y="129" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-3)">Agent</text>
+
+      <rect x="320" y="86" width="112" height="56" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.4"/>
+      <text x="376" y="112" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">test</text>
+      <text x="376" y="129" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-3)">CI, deterministisch</text>
+
+      <rect x="470" y="86" width="112" height="56" rx="3" fill="var(--brass-soft)" stroke="var(--brass)" stroke-width="1.4"/>
+      <text x="526" y="112" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">review</text>
+      <text x="526" y="129" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-3)">Agent</text>
+
+      <rect x="620" y="80" width="112" height="68" rx="3" fill="var(--clay-soft)" stroke="var(--clay)" stroke-width="2.2"/>
+      <text x="676" y="106" text-anchor="middle" font-family="Archivo, sans-serif" font-size="12" font-weight="600" fill="var(--ink)">Gate</text>
+      <text x="676" y="123" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--clay)">Mensch</text>
+      <text x="676" y="138" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-3)">blockierend</text>
+
+      <rect x="770" y="86" width="112" height="56" rx="3" fill="var(--surface-2)" stroke="var(--rule-strong)" stroke-width="1.4"/>
+      <text x="826" y="112" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11.5" fill="var(--ink)">ship</text>
+      <text x="826" y="129" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--ink-3)">Pipeline</text>
+
+      <line x1="132" y1="114" x2="162" y2="114" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar5)"/>
+      <line x1="282" y1="114" x2="312" y2="114" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar5)"/>
+      <line x1="432" y1="114" x2="462" y2="114" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar5)"/>
+      <line x1="582" y1="114" x2="612" y2="114" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar5)"/>
+      <line x1="732" y1="114" x2="762" y2="114" stroke="var(--clay)" stroke-width="1.8" marker-end="url(#ar5c)"/>
+
+      <rect x="320" y="18" width="112" height="34" rx="3" fill="var(--surface)" stroke="var(--clay)" stroke-width="1.3" stroke-dasharray="4 3"/>
+      <text x="376" y="40" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--clay)">Halted</text>
+      <line x1="376" y1="86" x2="376" y2="60" stroke="var(--clay)" stroke-width="1.3" marker-end="url(#ar5c)"/>
+
+      <path d="M 526 142 L 526 182 L 226 182 L 226 150" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#ar5)"/>
+      <text x="376" y="200" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">Findings → zurück in code</text>
+
+      <text x="676" y="172" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--clay)">ApprovalGranted</text>
+      <text x="676" y="188" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-3)">actor_id · occurred_at</text>
+      <text x="676" y="203" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9.5" fill="var(--ink-3)">unveränderlich im Log</text>
+
+      <text x="450" y="240" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink-3)">jeder Übergang schreibt StageEntered / StageCompleted mit derselben correlation_id</text>
+    </svg>
+  </div>
+  <figcaption><b>Abb. 5 — Das Gate ist ein Event, kein Flag.</b> Ein boolesches Feld „freigegeben“ beantwortet nicht, wer freigegeben hat, wann, und auf welchen Stand hin — und lässt sich stillschweigend zurücksetzen. Ein Event kann man nur durch ein weiteres Event widerrufen, und beide bleiben sichtbar. Die Freigabe passiert in OpenClaw; das Ereignis kommt über den WebSocket und trägt OpenClaws Approval-ID in der Payload.</figcaption>
+</figure>
+
+<section id="s12">
+  <h3><span class="num">§12</span>Read-only — und was „Aktion“ dann bedeutet</h3>
+  <p>Der Blueprint fordert in seinem §6 „no mutation, ever“ und verspricht zwei Absätze vorher einen Self-Heal-Loop. Beides geht nicht. Selbstheilung <em>ist</em> Mutation. Das ist keine Wortklauberei, sondern vier verschiedene Probleme, die alle an derselben Zeile hängen — und die vor der ersten Zeile Code entschieden sein müssen, weil sie die Rechtevergabe bestimmen.</p>
+  <ul class="plain">
+    <li><strong>Es ist eine Credential-Entscheidung.</strong> Read-only heißt: der Service-Account hat <code>view</code>-RBAC und sonst nichts. Dazwischen gibt es nichts — sobald ein einziger Codepfad schreiben können muss, hält der ganze Prozess Schreibrechte. Damit ist eine Lücke im Cockpit kein Informationsleck mehr, sondern Cluster-Zugriff.</li>
+    <li><strong>Das Event-Modell bekommt eine Rückkopplung.</strong> Automation handelt → Cluster ändert sich → der Connector beobachtet die Änderung → dieselbe Automation feuert erneut auf ihre eigene Wirkung. <code>causation_id</code> löst das nur, wenn der Connector das Cluster-Event auf deine Aktion zurückführen kann — Kubernetes-Events tragen deine ID aber nicht. Dazu die Latenz aus §9: beim Lesen ist eine veraltete Projektion harmlos, beim Handeln startet sie den Pod ein zweites Mal neu.</li>
+    <li><strong>Das Gate wird zur Dekoration.</strong> Ein Loop, der einen Prod-Workload neu startet, ist eine Produktionsänderung, die am menschlichen Gate vorbeigelaufen ist.</li>
+    <li><strong>Die Beweisrichtung dreht sich um.</strong> Der Log war als Aufzeichnung eines <em>Zeugen</em> begründet. Handelt die Ebene selbst, wird er zur Aufzeichnung der eigenen Taten, geschrieben vom Täter — und braucht dann ein zweiphasiges Muster (<code>ActionIntended</code> → <code>ActionSucceeded|Failed</code>), sonst steht für abgebrochene Aktionen genau nichts im Log. Also für den interessantesten Fall.</li>
+  </ul>
+  <p>Es gibt drei Auswege. Sie unterscheiden sich nicht darin, <em>ob</em> geheilt wird, sondern darin, wer die Schreibrechte hält:</p>
+</section>
+
+<figure>
+  <div class="fig-in">
+    <svg viewBox="0 0 900 340" role="img" aria-label="Drei Varianten für Self-Healing. In allen dreien bleibt das Cockpit read-only; unterschiedlich ist nur, welche Komponente danach die Schreibrechte hält: der Mensch, die bestehende Pipeline oder ein eng geschnittener Actor-Dienst.">
+      <defs>
+        <marker id="ar6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+
+      <line x1="307" y1="14" x2="307" y2="326" stroke="var(--rule-strong)" stroke-width="1"/>
+      <line x1="602" y1="14" x2="602" y2="326" stroke="var(--rule-strong)" stroke-width="1"/>
+
+      <text x="55" y="30" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" letter-spacing="1.3" fill="var(--ink-3)">C — BENACHRICHTIGEN</text>
+      <text x="350" y="30" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" letter-spacing="1.3" fill="var(--teal)">A — PULL REQUEST</text>
+      <text x="645" y="30" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" letter-spacing="1.3" fill="var(--ink-3)">B — ACTOR-DIENST</text>
+
+      <rect x="55" y="52" width="210" height="46" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+      <text x="160" y="80" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Cockpit — nur lesen</text>
+      <rect x="350" y="52" width="210" height="46" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+      <text x="455" y="80" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Cockpit — nur lesen</text>
+      <rect x="645" y="52" width="210" height="46" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="1.5"/>
+      <text x="750" y="80" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Cockpit — nur lesen</text>
+
+      <line x1="160" y1="98" x2="160" y2="124" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar6)"/>
+      <line x1="455" y1="98" x2="455" y2="124" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar6)"/>
+      <line x1="750" y1="98" x2="750" y2="124" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar6)"/>
+
+      <rect x="55" y="132" width="210" height="46" rx="3" fill="var(--surface)" stroke="var(--rule-strong)" stroke-width="1.3"/>
+      <text x="160" y="160" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">NotificationRaised</text>
+      <rect x="350" y="132" width="210" height="46" rx="3" fill="var(--surface)" stroke="var(--rule-strong)" stroke-width="1.3"/>
+      <text x="455" y="160" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Pull Request</text>
+      <rect x="645" y="132" width="210" height="46" rx="3" fill="var(--surface)" stroke="var(--rule-strong)" stroke-width="1.3"/>
+      <text x="750" y="160" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Queue · ActionIntended</text>
+
+      <line x1="160" y1="178" x2="160" y2="204" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar6)"/>
+      <line x1="455" y1="178" x2="455" y2="204" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar6)"/>
+      <line x1="750" y1="178" x2="750" y2="204" stroke="currentColor" stroke-width="1.3" marker-end="url(#ar6)"/>
+
+      <rect x="55" y="212" width="210" height="54" rx="3" fill="var(--clay-soft)" stroke="var(--clay)" stroke-width="2.2"/>
+      <text x="160" y="235" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Mensch führt aus</text>
+      <text x="160" y="252" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--clay)">hält die Schreibrechte</text>
+      <rect x="350" y="212" width="210" height="54" rx="3" fill="var(--clay-soft)" stroke="var(--clay)" stroke-width="2.2"/>
+      <text x="455" y="235" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Pipeline + Freigabe</text>
+      <text x="455" y="252" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--clay)">existiert schon</text>
+      <rect x="645" y="212" width="210" height="54" rx="3" fill="var(--clay-soft)" stroke="var(--clay)" stroke-width="2.2"/>
+      <text x="750" y="235" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--ink)">Actor-Dienst</text>
+      <text x="750" y="252" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="9" fill="var(--clay)">1 Verb · 1 Namespace</text>
+
+      <text x="160" y="292" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">Reaktion: Minuten bis Stunden</text>
+      <text x="160" y="310" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">Preis: 0 neue Komponenten</text>
+      <text x="455" y="292" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">Reaktion: Minuten, reviewbar</text>
+      <text x="455" y="310" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">Preis: nur Git-Inhalte heilbar</text>
+      <text x="750" y="292" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">Reaktion: Sekunden</text>
+      <text x="750" y="310" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="var(--ink-3)">Preis: zweiter Dienst, eigene RBAC</text>
+    </svg>
+  </div>
+  <figcaption><b>Abb. 6 — Das Cockpit ist in allen drei Varianten identisch.</b> Es hält nie Schreibrechte; unterschiedlich ist nur, welche Komponente hinter ihm sie hält. Damit bleibt §6 in jedem Fall wörtlich wahr, und die Schreiboberfläche ist immer eine einzelne, einzeln auditierbare Stelle.</figcaption>
+</figure>
+
+<section>
+  <div class="note ok">
+    <p class="note-k">Entscheidung</p>
+    <p><strong>A und C werden gebaut, B nicht.</strong> Ein Runbook-Treffer erzeugt eine Benachrichtigung mit dem vorgeschlagenen Kommando (C) und, wo die Ursache als Config im Git liegt, zusätzlich einen fertigen Pull Request (A). Mit Backstage ist das eine Scaffolder-Vorlage, ohne Backstage ein Knopf, der <code>gh pr create</code> auslöst.</p>
+    <p>Der Actor-Dienst (B) wird erst gebaut, wenn ein konkreter Vorfall <strong>mehr als dreimal aufgetreten ist und seine Behebung rein mechanisch ist</strong>. Unterhalb dieser Schwelle zahlst du zweiten Dienst, zweite Deployment-Einheit, eigene Rechte und eigene Fehlerfälle für einen Knopf, den du zehnmal im Jahr drückst.</p>
+  </div>
+  <p>Dazu die drei Regeln aus dem Blueprint, die unverändert gelten: Geheimnisse werden als Referenz gespeichert, nie als Wert. Erreichbar ist der Dienst nur im privaten Netz. Und der einzige offene Endpunkt ist ein Health-Check, der genau ein Bit verrät.</p>
+  <p>Das Muster ist übrigens dasselbe wie in §2, nur eine Ebene höher: dort schlägt das Modell vor und der Harness führt aus, hier schlägt das Cockpit vor und die Pipeline führt aus. In beiden Fällen liegt der Kontrollpunkt bewusst <em>nicht</em> bei dem Ding, das die Entscheidung trifft.</p>
+</section>
+
+<!-- ============ TEIL III ============ -->
+<div class="part">
+  <p class="part-no">Teil III</p>
+  <h2>Bauplan</h2>
+  <p>Jede Phase ist für sich brauchbar. Nach Phase 3 hast du den vollständigen Durchstich, den der Blueprint als Tagesziel beschreibt — Realität, Events, Projektion, Sicht.</p>
+</div>
+
+<section id="s13">
+  <h3><span class="num">§13</span>Reihenfolge und Aufwand</h3>
+  <div class="phases">
+    <div class="ph">
+      <div class="ph-n">P0</div>
+      <div><p class="ph-t">Telemetrie: OTel Collector und Prometheus</p><p class="ph-d">Beide per Compose, in OpenClaw das Plugin <code>diagnostics-otel</code> aktivieren und auf den Collector zeigen (OTLP/HTTP). <code>openclaw.tokens</code> und <code>openclaw.cost.usd</code> sind OTel-<em>Metriken</em> nach Channel, Provider und Modell — das Kosten-Board braucht keine Trace-Datenbank. Traces nach Tempo erst, wenn du sie vermisst; dann am ersten Trace prüfen, ob eine Flow-ID mitkommt. <strong>Langfuse bewusst nicht:</strong> sechs Container und 16 GB empfohlen, und sein Hauptwert — Prompts und Antworten pro Trace lesen — greift hier nicht, weil OpenClaw Inhalte standardmäßig gar nicht exportiert.</p></div>
+      <div class="ph-c">nur Config</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">P1</div>
+      <div><p class="ph-t">Event-Store und Durchstich</p><p class="ph-d">Postgres, Tabelle aus §9, Projektor, Read-Model <code>flows</code>. <strong>Zuerst ohne OpenClaw:</strong> eine Fixture-Datei mit rund zwanzig Events aus dem Katalog treibt den Projektor. Abnahme: Fixture einspielen → <code>flows</code> zeigt drei Läufe mit korrektem Schritt → leeren, <code>--rebuild</code> → Zeilen identisch, geprüft per Prüfsumme über die Tabelle. Erst dann der echte Connector mit beiden Quellen aus §10. Für echte <code>flow_runs</code>-Zeilen reicht eine lokale OpenClaw-Instanz im Container, die einen Beispiel-Flow einmal durchläuft — dafür brauchst du kein dauerhaftes Setup.</p></div>
+      <div class="ph-c">1–2 Tage</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">P2</div>
+      <div><p class="ph-t">Gate-Sicht und Read-API</p><p class="ph-d">Lesende Endpunkte hinter einem Bearer-Token: Flows mit aktuellem Schritt, offene Gates als Liste mit Sprung in OpenClaws Freigabe. Kein eigener Freigabe-Endpunkt — <code>ApprovalGranted</code> kommt vom Connector, nicht vom Cockpit. Der Health-Check bleibt nackt.</p></div>
+      <div class="ph-c">~1 Tag</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">P3</div>
+      <div><p class="ph-t">Grafana als eine Scheibe Glas</p><p class="ph-d">Zwei Datenquellen: Postgres über eine eigene Read-only-Rolle auf die Read-Models, und Prometheus. Drei Fragen muss das Board beantworten, sonst ist es nicht fertig: Welche Flows warten gerade auf mich? Was hat Agent X diese Woche gekostet? Warum ist Flow Y stehen geblieben?</p></div>
+      <div class="ph-c">~½ Tag</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">P4</div>
+      <div><p class="ph-t">Zwei Wochen betreiben, dann entscheiden</p><p class="ph-d">Erst danach beurteilen, ob Backstage als Portal dazukommt. Bis dahin weißt du, was du tatsächlich anschaust — und was du nur gebaut hättest, weil es im Blueprint stand.</p></div>
+      <div class="ph-c">—</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">P5</div>
+      <div><p class="ph-t">Runbooks — aber nur als Vorschlag</p><p class="ph-d">Variante C aus §12: Treffer erzeugt eine Benachrichtigung mit dem vorgeschlagenen Kommando. Wo die Ursache als Config im Git liegt, zusätzlich Variante A — ein fertiger Pull Request. Das Cockpit behält reine Leserechte.</p></div>
+      <div class="ph-c">~1 Tag</div>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <p class="note-k">Nicht gebaut — und die Bedingung, unter der sich das ändert</p>
+    <p><strong>Der Actor-Dienst (§12, Variante B).</strong> Erst wenn ein konkreter Vorfall mehr als dreimal aufgetreten ist <em>und</em> seine Behebung rein mechanisch ist. Notier diese Vorfälle ab P3 mit — die Schwelle ist dann eine Abfrage auf deinen eigenen Log, keine Bauchentscheidung.</p>
+    <p><strong>Incidents und Automations</strong> aus der Domain-Map. Die brauchen echtes Volumen, um sich zu lohnen, und dann nimmst du dafür Alertmanager oder Grafana OnCall statt Eigenbau. <strong>Ebenso der Cluster-Connector:</strong> solange nichts davon in einem Screen auftaucht, den du täglich öffnest, ist er nur eine Quelle für 58.000 Zeilen pro Tag.</p>
+  </div>
+
+  <p>Der Blueprint ist als Entwurf richtig. Er beschreibt nur ein System, das an einer Stelle baut, an der an drei Vierteln davon schon jemand gebaut hat. Was übrig bleibt, wenn man das abzieht, ist überschaubar — und es ist genau der Teil, der bei dir anders aussieht als bei allen anderen: deine Stufen, deine Gates, deine Freigaben.</p>
+</section>
+
+<section id="s14">
+  <h3><span class="num">§14</span>Tag 1 — die Reihenfolge am Morgen</h3>
+  <p>P0 und P1 aus §13, heruntergebrochen auf einen Arbeitstag. Die Reihenfolge ist so gewählt, dass jeder Schritt den nächsten prüfbar macht und OpenClaw an diesem Tag nicht vorkommt.</p>
+  <div class="phases">
+    <div class="ph">
+      <div class="ph-n">1</div>
+      <div><p class="ph-t">Repo und Ablage</p><p class="ph-d"><code>AI-Ochestrator/</code> mit <code>docs/architektur.html</code> (dieses Dokument), <code>compose.yaml</code>, <code>fixtures/</code> und <code>src/AgentOps/</code> als <em>ein</em> Projekt: ein Worker-Host mit drei Hosted Services — Connector, Projektor, API. Aufteilen erst, wenn es weh tut. <code>.env</code> nicht committen, Secrets in der Entwicklung über <code>dotnet user-secrets</code>.</p></div>
+      <div class="ph-c">10 min</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">2</div>
+      <div><p class="ph-t">Compose hochziehen</p><p class="ph-d">Vier Dienste: <code>postgres:16</code>, <code>otel/opentelemetry-collector-contrib</code>, <code>prom/prometheus</code>, <code>grafana/grafana</code>. Postgres bekommt zwei Rollen: <code>agentops</code> (Owner) und <code>grafana_ro</code> mit <code>SELECT</code> nur auf das Read-Model-Schema. Der Collector nimmt OTLP/HTTP auf <code>:4318</code> an und exportiert nach Prometheus — noch ohne Quelle, das ist in Ordnung.</p></div>
+      <div class="ph-c">30 min</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">3</div>
+      <div><p class="ph-t">Marten einbinden</p><p class="ph-d"><code>AddMarten</code> mit dem Connection String, die fünf Event-Typen aus §9 als <code>record</code>s, eine Projektion <code>FlowView</code> als asynchrone Projektion mit dem Read-Model <code>flows</code> (flow_id, stage, status, revision, gate_open, updated_at). Der Async-Daemon ist der Single-Writer aus Abb. 4 — Marten sichert ihn über Advisory Locks, du schreibst ihn nicht. Rebuild über <code>RebuildProjectionAsync</code> hinter einem <code>--rebuild</code>-Schalter.</p></div>
+      <div class="ph-c">1 h</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">4</div>
+      <div><p class="ph-t">Fixture-Durchstich</p><p class="ph-d"><code>fixtures/day1.jsonl</code> mit rund zwanzig Events aus dem Katalog: drei Flows — einer läuft bis <code>ship</code>, einer steht in <code>waiting</code> mit offenem <code>GatePending</code>, einer endet in <code>Halted</code>. Ein kleiner Loader hängt sie als Events an. Danach: <code>flows</code> ansehen, Prüfsumme ziehen, Read-Model leeren, <code>--rebuild</code>, Prüfsumme erneut ziehen.</p></div>
+      <div class="ph-c">Rest des Tages</div>
+    </div>
+    <div class="ph">
+      <div class="ph-n">5</div>
+      <div><p class="ph-t">Stopp-Kriterium</p><p class="ph-d">Tag 1 ist fertig, wenn die Prüfsumme zweimal gleich ist. Nicht vorher Grafana, nicht vorher der Connector, nicht vorher OpenClaw. Wenn sie ungleich ist, ist das Event-Modell unehrlich — dann ist genau das der Fund des Tages, und er ist billig, weil noch nichts darauf aufbaut.</p></div>
+      <div class="ph-c">—</div>
+    </div>
+  </div>
+  <pre><i>-- die Prüfsumme über das Read-Model, vor und nach dem Rebuild</i>
+<b>select</b> md5(string_agg(f::text, '|' <b>order by</b> f.flow_id))
+<b>from</b> flows f;</pre>
+  <div class="note">
+    <p class="note-k">Vor Tag 2 klären</p>
+    <p>Die OpenClaw-Version festnageln, weil Tabellen- und Feldnamen in <code>flow_runs</code> sich zwischen Versionen ändern können. Einen Beispiel-Flow mit den fünf Schrittnamen anlegen, damit der JSON-Zustand so aussieht wie später im Betrieb. Und einmal ein Approval auslösen und das WebSocket-Event mitschneiden — ob es den Freigebenden nennt, entscheidet, ob <code>actor_ref</code> in §9 ein Feld oder nur ein Verweis wird.</p>
+  </div>
+</section>
+
+<section id="s15">
+  <h3><span class="num">§15</span>Zielumgebung: srv1</h3>
+  <p>Der Stack läuft später auf srv1 — Debian 13, vier Kerne, 31 GB, Docker 29, erreichbar nur über Tailscale. Dort laufen bereits Pterodactyl mit Game-Containern auf der öffentlichen IP, n8n, eine .NET-Anwendung, ein Postgres 17 mit pgvector, netdata und ein Host-Nginx mit TLS. Vier Dinge daraus haben den Entwurf verändert:</p>
+  <ul class="plain">
+    <li><strong>Ebene 1 existiert dort nicht.</strong> Kein OpenClaw, kein Node, kein .NET auf dem Host — alles läuft in Containern. Die Wahl des Orchestrators ist damit wirklich offen, und der Stack ist so gebaut, dass er ohne ihn startet: Tag 1 bis 3 laufen ohne <code>--profile app</code>.</li>
+    <li><strong>Der Entscheidungs-Log bekommt seinen eigenen Postgres.</strong> Das vorhandene Postgres hört auf allen Interfaces eines Hosts mit öffentlicher IP. Das ist genau die Instanz, in die das Einzige, was sich nicht neu ableiten lässt, nicht gehört. Eigener Container, kein Host-Port, Zugriff nur über das Compose-Netz.</li>
+    <li><strong>Sichtbarkeit nur im Tailnet.</strong> netdata dort hört auf der Tailscale-IP statt auf 127.0.0.1 — dieselbe Konvention für Grafana. Nie die öffentliche IP; ein TLS-Proxy ist eine spätere, bewusste Entscheidung.</li>
+    <li><strong>Backup hängt sich an den vorhandenen Cron.</strong> srv1 sichert täglich und wöchentlich mit Retention nach <code>db-archive</code>. Eine <code>pg_dump</code>-Zeile dort erfüllt die Betriebsregel aus §9, ohne ein zweites Backup-System.</li>
+  </ul>
+  <p>Kleinigkeiten, die sonst den ersten Deploy kosten: Port 5432 ist belegt, 4317 gehört netdata (der Collector nimmt deshalb nur OTLP/HTTP auf 4318), und <code>sudo</code> verlangt ein Passwort — der Stack ist so geschnitten, dass er als <code>admin</code> in der docker-Gruppe ohne Root läuft, bis auf das einmalige Anlegen von <code>/opt/agentops</code>.</p>
+</section>
+
+<footer>
+  Grundlage: Blueprint „Build your own agent-ops control plane“ · Ausführungsebene <a href="https://github.com/openclaw/openclaw">OpenClaw</a> Gateway · Telemetrie OpenTelemetry Collector + Prometheus, Tempo optional, <a href="https://github.com/langfuse/langfuse">Langfuse</a> nur bei Bedarf an Prompt-Inhalten · Event-Store Postgres, für .NET optional <a href="https://martendb.io">Marten</a> · Portal optional <a href="https://backstage.io">Backstage</a><br>
+  Belege aus der OpenClaw-Doku: <a href="https://docs.openclaw.ai/automation/taskflow">Task Flow</a> (Flow-Status, Revision, SQLite) · <a href="https://docs.openclaw.ai/gateway/protocol">Gateway-Protokoll</a> (sessions.subscribe, includeApprovals, Scopes) · <a href="https://docs.openclaw.ai/gateway/opentelemetry">OpenTelemetry-Export</a> (diagnostics-otel, keine Session-Schlüssel)
+</footer>
+
+</div>

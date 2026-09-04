@@ -1,0 +1,137 @@
+name: agentops
+
+# Läuft lokal und auf srv1 mit derselben Datei. Die Basis ist server-sicher:
+# kein Datenbank-Port nach außen, Grafana nur auf BIND_ADDR (lokal 127.0.0.1, auf srv1 die Tailscale-IP).
+#
+#   lokal:  docker compose -f compose.yaml -f compose.dev.yaml up -d      (publiziert Postgres auf 127.0.0.1:5432)
+#   srv1:   docker compose --profile app up -d --build
+#
+# Secrets kommen aus .env (siehe .env.example), nie aus dieser Datei.
+
+services:
+  postgres:
+    # pg17 wie postgres-bots auf srv1, damit pg_dump/pg_restore und das Backup-Skript zusammenpassen.
+    image: postgres:17
+    container_name: agentops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD fehlt in .env}
+      POSTGRES_DB: agentops
+      # werden von infra/postgres/init/01-roles.sh beim ersten Start gelesen
+      AGENTOPS_PASSWORD: ${AGENTOPS_PASSWORD:?AGENTOPS_PASSWORD fehlt in .env}
+      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD:?GRAFANA_RO_PASSWORD fehlt in .env}
+    # Kein ports-Eintrag: auf srv1 liegt 5432 schon bei postgres-bots, und nach außen braucht die DB
+    # niemand — agentops und Grafana erreichen sie über das Compose-Netz. Lokal: compose.dev.yaml.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agentops"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [agentops]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    container_name: agentops-otel
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./infra/otel/collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      # OTLP/HTTP rein — Ziel für OpenClaws diagnostics-otel.
+      # 4317 (gRPC) bleibt frei: auf srv1 hört dort netdata.
+      - "127.0.0.1:4318:4318"
+    networks: [agentops]
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: agentops-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - otel-collector
+    networks: [agentops]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: agentops-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD fehlt in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      # wird in provisioning/datasources/datasources.yaml per ${GRAFANA_RO_PASSWORD} eingesetzt
+      GRAFANA_RO_PASSWORD: ${GRAFANA_RO_PASSWORD}
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      # lokal 127.0.0.1; auf srv1 BIND_ADDR=<Tailscale-IP> (Tailscale) — wie netdata dort. Nie die öffentliche IP.
+      - "${BIND_ADDR:-127.0.0.1}:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+    networks: [agentops]
+
+  # Der eigene Dienst: Connector + Projektor + Read-API in einem Container.
+  # Nur mit --profile app, damit Tag 1 ohne Build auskommt.
+  agentops:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: src/AgentOps/Dockerfile
+    image: agentops:local
+    container_name: agentops-app
+    restart: unless-stopped
+    # UID/GID des Besitzers von OPENCLAW_STATE_DIR — sonst kann der Connector die SQLite nicht lesen.
+    user: "${AGENTOPS_UID:-1654}:${AGENTOPS_GID:-1654}"
+    environment:
+      HOME: /tmp
+      ConnectionStrings__AgentOps: Host=postgres;Database=agentops;Username=agentops;Password=${AGENTOPS_PASSWORD}
+      OpenClaw__StatePath: /openclaw/state/openclaw.sqlite
+      OpenClaw__GatewayUrl: ws://host.docker.internal:18789
+      OpenClaw__PollSeconds: "5"
+    volumes:
+      # OpenClaws State-Verzeichnis. Bewusst nicht :ro — SQLite im WAL-Modus braucht auch zum Lesen
+      # Schreibzugriff auf die -shm-Datei. Die Read-only-Garantie liegt auf der Verbindung (Mode=ReadOnly).
+      # Default zeigt auf einen leeren lokalen Ordner, damit `docker compose up` ohne Profil nicht an
+      # der Interpolation scheitert (Compose wertet ${..:?} vor den Profilen aus). Auf srv1 setzen.
+      - ${OPENCLAW_STATE_DIR:-./fixtures/openclaw-state}:/openclaw/state
+    extra_hosts:
+      # Gateway läuft auf dem Host (oder als eigener Compose-Dienst — dann hier dessen Namen eintragen)
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:5080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # aspnet-Image hat weder curl noch wget; bash kann TCP.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && echo -e 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q ' 200 ' <&3"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    networks: [agentops]
+
+networks:
+  # eigenes Netz wie bei fahrschule/n8n auf srv1 — nichts teilt sich ein Netz mit den Game-Containern
+  agentops:
+    driver: bridge
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:

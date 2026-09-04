@@ -1,0 +1,20 @@
+# Secrets
+.env
+*.pfx
+
+# .NET
+bin/
+obj/
+*.user
+*.swp
+.vs/
+
+# JetBrains
+.idea/
+*.sln.iml
+
+# Lokale Daten
+fixtures/openclaw-state/
+fixtures/*.sqlite
+fixtures/*.sqlite-wal
+fixtures/*.sqlite-shm

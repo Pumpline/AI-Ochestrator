@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <!-- net8.0 baut mit SDK 8, 9 und 10. Hochziehen, sobald das Projekt steht. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- dotnet user-secrets set "ConnectionStrings:AgentOps" "Host=127.0.0.1;Database=agentops;Username=agentops;Password=..." -->
+    <UserSecretsId>agentops-dev</UserSecretsId>
+  </PropertyGroup>
+
+  <!-- Tag 1, Schritt 3 (docs/architektur.html §14): dotnet add package Marten -->
+
+</Project>

@@ -1,0 +1,10 @@
+# Nur lokal, wird nicht automatisch geladen:
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+# Publiziert, was man beim Entwickeln von außen braucht. Auf srv1 nie mitgeben (5432 ist dort belegt).
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+  otel-collector:
+    ports:
+      - "127.0.0.1:8889:8889"   # Prometheus-Exporter direkt ansehen

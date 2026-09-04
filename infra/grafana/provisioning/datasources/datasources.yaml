@@ -1,0 +1,26 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+
+  # Nur lesen, nur Schema readmodel — Rolle aus infra/postgres/init/01-roles.sh
+  - name: AgentOps (read-only)
+    uid: agentops-pg
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: grafana_ro
+    database: agentops
+    editable: false
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    secureJsonData:
+      password: ${GRAFANA_RO_PASSWORD}
