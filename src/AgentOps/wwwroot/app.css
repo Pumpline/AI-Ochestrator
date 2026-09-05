@@ -36,7 +36,7 @@ html[data-theme="dark"]{
   --grid-line:rgba(120,150,230,.035);
   color-scheme:dark;
 }
-html[data-theme="dark"] body{background:radial-gradient(1100px 700px at 85% -10%,#0a101f 0%,rgba(10,16,31,0) 55%),#05060b}
+html[data-theme="dark"] body::before{background:radial-gradient(1100px 700px at 85% -10%,#0a101f 0%,rgba(10,16,31,0) 55%)}
 html[data-theme="dark"] .topbar{background:rgba(5,6,11,.82);box-shadow:0 1px 0 rgba(120,150,230,.06)}
 html[data-theme="dark"] .logo{background:linear-gradient(145deg,#3d6df5 0%,#2244c4 70%);box-shadow:0 0 14px rgba(34,68,196,.4)}
 html[data-theme="dark"] .card{background:var(--card);box-shadow:0 1px 2px rgba(0,0,0,.4),inset 0 1px 0 rgba(148,178,255,.03)}
@@ -52,11 +52,13 @@ html[data-theme="dark"] .avatar{background:var(--accent-soft)}
 html[data-theme="dark"] .nav-item .icon{color:#8e9ab0}
 *{box-sizing:border-box}
 html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--text);font-family:var(--f-sans);font-size:13.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
-/* Atmosphäre: ein fader Raster und seitliche Lichtbögen hinter allem — nie vor Inhalt */
+html{background:var(--bg)}
+body{margin:0;color:var(--text);font-family:var(--f-sans);font-size:13.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+/* Atmosphäre: Lichtbögen (body::before) und ein fader Raster (body::after) als feste Schichten am
+   Viewport — sie stehen still, während die Seite durchläuft; die Grundfarbe trägt das html-Element. */
 body::before,body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:-1}
 body::after{background-image:linear-gradient(var(--grid-line) 1px,transparent 1px),linear-gradient(90deg,var(--grid-line) 1px,transparent 1px);background-size:44px 44px;-webkit-mask-image:radial-gradient(ellipse 120% 70% at 50% 0%,#000 0%,transparent 80%);mask-image:radial-gradient(ellipse 120% 70% at 50% 0%,#000 0%,transparent 80%)}
-html:not([data-theme="dark"]) body{background:radial-gradient(1100px 700px at 85% -10%,#e9eff8 0%,rgba(233,239,248,0) 60%),radial-gradient(900px 650px at -15% 110%,#e7f2f0 0%,rgba(231,242,240,0) 55%),#f4f6f9}
+html:not([data-theme="dark"]) body::before{background:radial-gradient(1100px 700px at 85% -10%,#e9eff8 0%,rgba(233,239,248,0) 60%),radial-gradient(900px 650px at -15% 110%,#e7f2f0 0%,rgba(231,242,240,0) 55%)}
 a{color:inherit;text-decoration:none}
 button{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius)}
