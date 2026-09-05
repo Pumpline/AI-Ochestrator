@@ -3,12 +3,18 @@
 
 import { mountProjectMap, fmtDuration, fmtTokens, DEFAULT_GRAPH } from "/map.js";
 
-// Der Graph eines Flows für die Karte: Knoten in Reihenfolge des Hauptwegs (Agenten und Gates), alle Kanten
+// Der Graph eines Flows für die Karte: Knoten in Reihenfolge des Hauptwegs (Agenten und Gates), alle Kanten.
+// Im Master-Modus gibt es keine Kanten im Pool — der Master (die Mitte) ruft; gezeichnet werden nur Gate und Nachlauf.
 function graphOf(flow, path) {
   if (!flow?.agents) return DEFAULT_GRAPH;
   const gates = flow.gates ?? [];
-  const ids = (path?.length ? path : [...Object.keys(flow.agents), ...gates]).filter((id) => flow.agents[id] || gates.includes(id));
-  return { nodes: ids.map((id) => ({ id, kind: gates.includes(id) ? "gate" : "agent" })), edges: (flow.edges ?? []).filter((e) => ids.includes(e.from) && ids.includes(e.to)).map((e) => ({ from: e.from, to: e.to, on: e.on ?? null })), path: ids };
+  const ids = (path?.length ? path : [...Object.keys(flow.agents), ...gates]).filter((id) => id !== "master" && (flow.agents[id] || gates.includes(id)));
+  let edges = (flow.edges ?? []).filter((e) => ids.includes(e.from) && ids.includes(e.to)).map((e) => ({ from: e.from, to: e.to, on: e.on ?? null }));
+  if (flow.mode === "master") {
+    const tail = Object.entries(flow.agents).filter(([id, a]) => id !== "master" && a.after === "gate").map(([id]) => id);
+    edges = [...gates, ...tail].slice(0, -1).map((from, i) => ({ from, to: [...gates, ...tail][i + 1], on: null })).filter((e) => e.to);
+  }
+  return { nodes: ids.map((id) => ({ id, kind: gates.includes(id) ? "gate" : "agent" })), edges, path: ids };
 }
 
 const STEPS = ["plan", "code", "test", "review", "gate", "ship"];
@@ -381,26 +387,31 @@ async function pageProject(name) {
   renderAgent(active);
 
   // Flow-Editor: Agenten hinzufügen und entfernen, Kanten verbinden und lösen, Gates, Start — gespeichert wird die ganze Definition
-  const draft = flow ? JSON.parse(JSON.stringify(flow)) : { start: "plan", agents: Object.fromEntries(SOUL_STEPS.map((s) => [s, {}])), gates: ["gate"], edges: DEFAULT_GRAPH.edges.map((e) => ({ from: e.from, to: e.to, on: e.on ?? null, max: e.on ? 2 : null })) };
+  const draft = flow ? JSON.parse(JSON.stringify(flow)) : { mode: "graph", start: "plan", agents: Object.fromEntries(SOUL_STEPS.map((s) => [s, {}])), gates: ["gate"], edges: DEFAULT_GRAPH.edges.map((e) => ({ from: e.from, to: e.to, on: e.on ?? null, max: e.on ? 2 : null })), master: { maxSteps: 8 } };
+  draft.mode = draft.mode === "master" ? "master" : "graph"; draft.master = { maxSteps: draft.master?.maxSteps ?? 8 };
   draft.edges = (draft.edges ?? []).map((e) => Array.isArray(e) ? { from: e[0], to: e[1], on: null, max: null } : { from: e.from, to: e.to, on: e.on ?? null, max: e.max ?? null });
   const NODE_ID = /^[a-z][a-z0-9_-]{0,30}$/;
   const renderFlowEditor = (error = flowDef?.error ?? null) => {
-    const ids = Object.keys(draft.agents); const all = [...ids, ...draft.gates];
+    const master = draft.mode === "master";
+    const ids = Object.keys(draft.agents).filter((id) => id !== "master"); const all = [...ids, ...draft.gates];
     const opt = (list, cur) => list.map((v) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
     $("#flow-editor").innerHTML = `
       ${error ? `<div class="alert alert--danger" style="margin-bottom:12px">${icon("alert")}<span>${esc(error)}</span></div>` : ""}
+      <div class="model-row" style="margin-bottom:14px"><span class="field__label">Modus</span><select class="select select--narrow" id="flow-mode"><option value="graph"${master ? "" : " selected"}>Graph — feste Kanten entscheiden</option><option value="master"${master ? " selected" : ""}>Master — der Master ruft die Agenten</option></select>${master ? `<span class="field__label">höchstens</span><input class="input mono" id="master-max" type="number" min="1" max="30" value="${esc(draft.master.maxSteps)}" style="max-width:70px"><span class="field__label">Entscheidungen je Lauf</span>` : ""}</div>
+      ${master ? `<div class="alert alert--info" style="margin-bottom:12px">${icon("alert")}<span>Der Master (Agent <span class="mono">master</span>, unten einstellbar) liest die Notizen und wählt nach jedem Schritt den nächsten Agenten oder sagt done. <strong>Pflicht</strong>-Agenten laufen vor dem Gate automatisch nach, wenn er sie nicht gerufen hat; Agenten <strong>nach dem Gate</strong> laufen erst nach der Freigabe, in dieser Reihenfolge. Gates bleiben Menschen.</span></div>` : ""}
       <div class="flowed">
         <div class="flowed__col">
-          <div class="field__label">Agenten</div>
-          <div class="chips">${ids.map((id) => `<span class="chip"><span class="mono">${esc(id)}</span>${ids.length > 1 ? `<button type="button" class="chip__x" data-rm-agent="${esc(id)}" title="Agent und seine Kanten entfernen">×</button>` : ""}</span>`).join("")}</div>
+          <div class="field__label">Agenten${master ? " — der Pool, aus dem der Master wählt" : ""}</div>
+          ${master
+            ? `<table class="table table--compact"><thead><tr><th>Agent</th><th>Pflicht</th><th>nach Gate</th><th>Beschreibung für den Master</th><th></th></tr></thead><tbody>${ids.map((id) => `<tr><td class="mono">${esc(id)}</td><td><input type="checkbox" data-req="${esc(id)}"${draft.agents[id].required ? " checked" : ""}></td><td><input type="checkbox" data-after="${esc(id)}"${draft.agents[id].after === "gate" ? " checked" : ""}></td><td><input class="input" data-desc="${esc(id)}" value="${esc(draft.agents[id].description ?? "")}" placeholder="aus der Soul, wenn leer" style="width:100%"></td><td class="num">${ids.length > 1 ? `<button type="button" class="chip__x" data-rm-agent="${esc(id)}" title="Agent entfernen">×</button>` : ""}</td></tr>`).join("")}</tbody></table>`
+            : `<div class="chips">${ids.map((id) => `<span class="chip"><span class="mono">${esc(id)}</span>${ids.length > 1 ? `<button type="button" class="chip__x" data-rm-agent="${esc(id)}" title="Agent und seine Kanten entfernen">×</button>` : ""}</span>`).join("")}</div>`}
           <div class="model-row" style="margin-top:6px"><input class="input mono" id="new-agent" placeholder="neuer Agent, z.B. security" style="max-width:220px"><button class="btn btn--secondary btn--sm" id="add-agent" type="button">Agent hinzufügen</button></div>
           <div class="field__label" style="margin-top:14px">Gates (ein Mensch entscheidet)</div>
           <div class="chips">${draft.gates.map((id) => `<span class="chip chip--gate"><span class="mono">${esc(id)}</span><button type="button" class="chip__x" data-rm-gate="${esc(id)}">×</button></span>`).join("") || `<span class="dim" style="font-size:12px">kein Gate — der Flow wird abgelehnt</span>`}</div>
           <div class="model-row" style="margin-top:6px"><input class="input mono" id="new-gate" placeholder="neues Gate, z.B. release" style="max-width:220px"><button class="btn btn--secondary btn--sm" id="add-gate" type="button">Gate hinzufügen</button></div>
-          <div class="field__label" style="margin-top:14px">Start</div>
-          <select class="select select--narrow" id="flow-start">${opt(ids, draft.start)}</select>
+          ${master ? "" : `<div class="field__label" style="margin-top:14px">Start</div><select class="select select--narrow" id="flow-start">${opt(ids, draft.start)}</select>`}
         </div>
-        <div class="flowed__col">
+        <div class="flowed__col"${master ? " hidden" : ""}>
           <div class="field__label">Kanten — Standardkante immer, mit Urteil nur wenn die letzte Zeile der Übergabedatei es enthält</div>
           <table class="table table--compact"><thead><tr><th>von</th><th>nach</th><th>bei Urteil</th><th>max</th><th></th></tr></thead><tbody>
             ${draft.edges.map((e, i) => `<tr><td class="mono">${esc(e.from)}</td><td class="mono">${esc(e.to)}</td><td class="mono">${e.on ? esc(e.on) : `<span class="dim">Standard</span>`}</td><td class="num">${e.max ?? ""}</td><td class="num"><button type="button" class="chip__x" data-rm-edge="${i}" title="Kante lösen">×</button></td></tr>`).join("") || `<tr><td colspan="5" class="dim">keine Kanten</td></tr>`}
@@ -437,12 +448,17 @@ async function pageProject(name) {
       if (!on && draft.edges.some((e) => e.from === from && !e.on)) return toast(`${from} hat schon eine Standardkante — erst lösen`, "error");
       draft.edges.push({ from, to, on, max: on ? max : null }); renderFlowEditor(null);
     });
-    $("#flow-start").addEventListener("change", (e) => { draft.start = e.target.value; });
+    $("#flow-start")?.addEventListener("change", (e) => { draft.start = e.target.value; });
+    $("#flow-mode").addEventListener("change", (e) => { draft.mode = e.target.value; if (draft.mode === "master" && !draft.agents.master) draft.agents.master = {}; renderFlowEditor(null); });
+    $("#master-max")?.addEventListener("change", (e) => { draft.master.maxSteps = Math.max(1, Math.min(30, Number(e.target.value) || 8)); });
+    ed.querySelectorAll("[data-req]").forEach((c) => c.addEventListener("change", () => { if (c.checked) draft.agents[c.dataset.req].required = true; else delete draft.agents[c.dataset.req].required; }));
+    ed.querySelectorAll("[data-after]").forEach((c) => c.addEventListener("change", () => { if (c.checked) draft.agents[c.dataset.after].after = "gate"; else delete draft.agents[c.dataset.after].after; }));
+    ed.querySelectorAll("[data-desc]").forEach((i) => i.addEventListener("change", () => { const v = i.value.trim(); if (v) draft.agents[i.dataset.desc].description = v; else delete draft.agents[i.dataset.desc].description; }));
     $("#flow-reset").addEventListener("click", () => { pageProject.tab = active; pageProject(name); });
     $("#flow-save").addEventListener("click", async () => {
       const btn = $("#flow-save"); btn.disabled = true;
       try {
-        const r = await api(`/projects/${encodeURIComponent(name)}/flow`, { method: "PUT", body: { start: draft.start, agents: draft.agents, gates: draft.gates, edges: draft.edges.map((e) => ({ from: e.from, to: e.to, ...(e.on ? { on: e.on } : {}), ...(e.max ? { max: e.max } : {}) })) } });
+        const r = await api(`/projects/${encodeURIComponent(name)}/flow`, { method: "PUT", body: { mode: draft.mode, master: draft.master, start: draft.start, agents: draft.agents, gates: draft.gates, edges: draft.edges.map((e) => ({ from: e.from, to: e.to, ...(e.on ? { on: e.on } : {}), ...(e.max ? { max: e.max } : {}) })) } });
         toast(`Flow gespeichert, Commit ${r.commit}`); pageProject.tab = active; pageProject(name);
       } catch (e) { renderFlowEditor(e.message); btn.disabled = false; }
     });
@@ -502,7 +518,7 @@ async function pageAgents() {
   page().innerHTML = `
     <div class="alert alert--info">${icon("alert")}<span>Das sind die <strong>Vorlagen</strong>. Jedes Projekt bekommt eigene Agenten je Schritt, die Modell, Effort und Tools von hier erben, solange das Projekt nichts anderes sagt — Projektseite, „Agenten des Projekts“, als Commit in <span class="mono">.agentops/</span> des Repos. Eine Tool-Liste ist eine absolute Allowlist: nichts angehakt heißt OpenClaws Standard-Policy.</span></div>
     ${card("Standard-Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th>Effort</th><th>Tools</th><th></th></tr></thead><tbody>${agents.map((a) => `
-      <tr data-agent="${esc(a.id)}"><td class="strong mono">${esc(a.id)}</td><td>${a.role === "master" ? "Master — OpenClaws Hauptagent (Chat, Delegation)" : `Pipeline-Schritt <span class="mono">${esc(a.step)}</span>`}</td>
+      <tr data-agent="${esc(a.id)}"><td class="strong mono">${esc(a.id)}</td><td>${a.role === "main" ? "OpenClaws Hauptagent (Chat, Delegation)" : a.role === "master" ? "Master der Pipeline — entscheidet im Master-Modus, welcher Agent dran ist" : `Pipeline-Schritt <span class="mono">${esc(a.step)}</span>`}</td>
       <td><div class="model-pick"><select class="select" data-model>${options(a.model)}</select><input class="input mono" data-other placeholder="anbieter/modell" value="${esc(a.model ?? "")}"${!a.model || known(a.model) ? " hidden" : ""}></div><span class="sub">${a.explicit ? "im Agenten gesetzt" : "Laufzeit-Standard von OpenClaw"}${a.runtime ? ` · Laufzeit ${esc(a.runtime)}` : ""}</span></td>
       <td><select class="select select--narrow" data-thinking>${thinkingOptions(a.thinking, `Standard${a.thinkingDefault ? ` — ${a.thinkingDefault}` : ""}`)}</select></td>
       <td data-tools>${toolPicker(a.tools)}</td>

@@ -278,9 +278,12 @@ public static class Cockpit
         if (!File.Exists(path)) return Steps;
         try
         {
-            var agents = (JsonNode.Parse(File.ReadAllText(path)) as JsonObject)?["agents"] as JsonObject;
-            var ids = agents?.Select(p => p.Key).Where(k => Regex.IsMatch(k, "^[a-z][a-z0-9_-]{0,30}$")).ToArray();
-            return ids is { Length: > 0 } ? ids : Steps;
+            var flow = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+            var agents = flow?["agents"] as JsonObject;
+            var ids = agents?.Select(p => p.Key).Where(k => Regex.IsMatch(k, "^[a-z][a-z0-9_-]{0,30}$")).ToList() ?? [];
+            // Im Master-Modus ist der Master ein Knoten mit eigener Soul, auch wenn flow.json ihn nicht aufführt
+            if (flow?["mode"] is JsonValue m && m.TryGetValue<string>(out var mode) && mode == "master" && !ids.Contains("master")) ids.Insert(0, "master");
+            return ids.Count > 0 ? [.. ids] : Steps;
         }
         catch (JsonException) { return Steps; }
     }
