@@ -183,6 +183,26 @@ main.page{padding:18px 20px 60px}
 .map__legend i{width:8px;height:8px;border-radius:50%;display:inline-block}
 .map__hint{position:absolute;right:14px;bottom:12px;font-size:11px;color:var(--text-faint);pointer-events:none}
 
+.map--flow{height:320px}
+
+/* ---------- Agenten (Modellwahl), Schritte eines Laufs ---------- */
+.select{width:100%;background:var(--panel);border:.5px solid var(--border-strong);border-radius:var(--radius);color:var(--text);padding:7px 10px;font:inherit;font-size:13px}
+.select:focus{border-color:var(--accent);outline:none}
+.model-pick{display:flex;flex-direction:column;gap:6px;min-width:300px}
+.steps{display:flex;flex-direction:column}
+.step{border-top:.5px solid var(--border)}
+.step summary,.step__sum{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;cursor:pointer;font-size:13px}
+.step__sum{cursor:default}
+.step summary::-webkit-details-marker{display:none}
+.step summary:hover{background:var(--hover)}
+.step__name{color:var(--text);display:inline-flex;gap:8px;align-items:center;min-width:120px}
+.step__meta{display:flex;gap:14px;align-items:center;color:var(--text-dim);font-family:var(--f-mono);font-size:12px;flex-wrap:wrap;justify-content:flex-end}
+.step__body{padding:4px 16px 14px;display:flex;flex-direction:column;gap:10px}
+.step__tokens{font-size:11.5px;color:var(--text-faint)}
+.qa{display:grid;grid-template-columns:72px 1fr;gap:10px;align-items:start}
+.qa__k{font-family:var(--f-head);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--text-dim);padding-top:8px}
+.qa__v{margin:0;background:var(--panel);border:.5px solid var(--border);border-radius:var(--radius);padding:10px 12px;font-family:var(--f-mono);font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;color:var(--text-muted)}
+
 /* ---------- Souls ---------- */
 .soul-tag{font-size:11px;color:var(--text-faint)}
 .soul-tag.override{color:var(--accent)}

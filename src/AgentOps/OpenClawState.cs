@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
 namespace AgentOps.OpenClaw;
@@ -84,6 +85,77 @@ public static class OpenClawState
         }
         return rows;
     }
+
+    public sealed record SubagentRun(string RunId, string? Task, string? ResultText, long? StartedAt, long? EndedAt, long? ElapsedMs, string? Outcome, string? ChildSessionKey);
+
+    /// <summary>Ein Subagent-Lauf: die Aufgabe (die Frage), die Abschlussnachricht (die Antwort) und die Zeiten — aus subagent_runs.payload_json.</summary>
+    public static async Task<SubagentRun?> ReadSubagentRunAsync(SqliteConnection conn, string runId, CancellationToken ct)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "select child_session_key, payload_json from subagent_runs where run_id = @id";
+        cmd.Parameters.AddWithValue("@id", runId);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct)) return null;
+        var key = Str(r, 0);
+        var payload = Str(r, 1);
+        if (payload is null) return new SubagentRun(runId, null, null, null, null, null, null, key);
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+            var exec = Obj(root, "execution");
+            var outcome = Obj(exec, "outcome");
+            return new SubagentRun(runId,
+                StrOf(root, "task"),
+                StrOf(Obj(root, "completion"), "resultText"),
+                LongOf(outcome, "startedAt") ?? LongOf(exec, "startedAt"),
+                LongOf(outcome, "endedAt") ?? LongOf(exec, "endedAt"),
+                LongOf(outcome, "elapsedMs"),
+                StrOf(outcome, "status"),
+                key);
+        }
+        catch (JsonException)
+        {
+            return new SubagentRun(runId, null, null, null, null, null, null, key);
+        }
+    }
+
+    public sealed record RunUsage(string? Model, long Input, long Output, long CacheRead, long CacheWrite, double Cost, int Calls)
+    {
+        public long Total => Input + Output + CacheRead + CacheWrite;
+    }
+
+    /// <summary>
+    /// Tokens und Kosten eines Laufs aus dem Transkript des Agenten: jede Assistant-Nachricht trägt usage und die
+    /// Run-ID (message.__openclaw.runId). Die Datei liegt je Agent unter agents/&lt;id&gt;/agent/openclaw-agent.sqlite.
+    /// </summary>
+    public static async Task<RunUsage?> ReadRunUsageAsync(string agentDbPath, string runId, CancellationToken ct)
+    {
+        if (!File.Exists(agentDbPath)) return null;
+        await using var conn = Open(agentDbPath);
+        await conn.OpenAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            select max(json_extract(event_json, '$.message.provider') || '/' || json_extract(event_json, '$.message.model')),
+                   sum(coalesce(json_extract(event_json, '$.message.usage.input'), 0)),
+                   sum(coalesce(json_extract(event_json, '$.message.usage.output'), 0)),
+                   sum(coalesce(json_extract(event_json, '$.message.usage.cacheRead'), 0)),
+                   sum(coalesce(json_extract(event_json, '$.message.usage.cacheWrite'), 0)),
+                   sum(coalesce(json_extract(event_json, '$.message.usage.cost.total'), 0)),
+                   count(*)
+            from transcript_events
+            where json_extract(event_json, '$.message.role') = 'assistant'
+              and json_extract(event_json, '$.message.__openclaw.runId') = @run
+            """;
+        cmd.Parameters.AddWithValue("@run", runId);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        if (!await r.ReadAsync(ct) || r.IsDBNull(6) || r.GetInt32(6) == 0) return null;
+        return new RunUsage(Str(r, 0), r.GetInt64(1), r.GetInt64(2), r.GetInt64(3), r.GetInt64(4), r.IsDBNull(5) ? 0 : r.GetDouble(5), r.GetInt32(6));
+    }
+
+    public static JsonElement Obj(JsonElement e, string name) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Object ? v : default;
+    public static string? StrOf(JsonElement e, string name) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    public static long? LongOf(JsonElement e, string name) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var l) ? l : null;
 
     private static string? Str(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetString(i);
     private static long? Long(SqliteDataReader r, int i) => r.IsDBNull(i) ? null : r.GetInt64(i);

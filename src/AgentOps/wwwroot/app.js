@@ -1,7 +1,7 @@
 // Agent-Ops Cockpit — ein Modul, kein Framework, kein Build.
 // Anmeldung über Discord (Cookie-Session); der Bearer-Token bleibt als Fallback für Umgebungen ohne Discord.
 
-import { mountProjectMap } from "/map.js";
+import { mountProjectMap, fmtDuration, fmtTokens } from "/map.js";
 
 const STEPS = ["plan", "code", "test", "review", "gate", "ship"];
 const SOUL_STEPS = ["plan", "code", "test", "review", "ship"];
@@ -10,6 +10,7 @@ const NAV = [
   { route: "", title: "Dashboard", icon: "dashboard" },
   { route: "flows", title: "Flows", icon: "workflow" },
   { route: "gates", title: "Freigaben", icon: "shield", badge: "gates" },
+  { route: "agents", title: "Agenten", icon: "cpu" },
   { route: "costs", title: "Kosten", icon: "coins" },
 ];
 const LOGIN_ERRORS = {
@@ -188,9 +189,30 @@ async function pageGates() {
   bindRows();
 }
 
+// Ein Schritt eines Laufs: Frage (die Aufgabe an den Agenten), Antwort (seine Abschlussnachricht), Dauer, Tokens, Kosten.
+function stepRow(s) {
+  const tok = s.tokens; const running = s.startedAt && !s.endedAt;
+  const ms = s.durationMs ?? (running ? Date.now() - s.startedAt : null);
+  const verdictCls = s.verdict === "fail" || s.verdict === "request_changes" ? "badge--warning" : "badge--success";
+  return `<details class="step"><summary>
+      <span class="step__name mono">${esc(s.step)}${s.attempt > 1 ? `<span class="badge badge--accent">Versuch ${esc(s.attempt)}</span>` : ""}${running ? `<span class="badge badge--accent">läuft</span>` : ""}</span>
+      <span class="step__meta">${s.model ? `<span>${esc(s.model)}</span>` : ""}<span>${esc(fmtDuration(ms))}</span><span>${tok ? `${esc(fmtTokens(tok.total))} tok` : "–"}</span><span>${s.cost != null ? esc(usd(s.cost)) : ""}</span>${s.verdict ? `<span class="badge ${verdictCls}">${esc(s.verdict)}</span>` : ""}${s.outcome && s.outcome !== "ok" ? `<span class="badge badge--danger">${esc(s.outcome)}</span>` : ""}</span>
+    </summary>
+    <div class="step__body">
+      ${tok ? `<div class="step__tokens mono">Eingabe ${tok.input.toLocaleString("de-DE")} · Ausgabe ${tok.output.toLocaleString("de-DE")} · Cache ${(tok.cacheRead + tok.cacheWrite).toLocaleString("de-DE")} · ${esc(s.calls)} Modellaufrufe${s.soulOverride ? " · Projekt-Soul" : ""}</div>` : `<div class="step__tokens">Keine Tokens gefunden — das Transkript des Agenten ist nicht erreichbar oder der Lauf ist noch offen.</div>`}
+      <div class="qa"><div class="qa__k">Frage</div><pre class="qa__v">${esc(s.prompt ?? "– (Lauf nicht mehr in OpenClaws subagent_runs)")}</pre></div>
+      <div class="qa"><div class="qa__k">Antwort</div><pre class="qa__v">${esc(s.answer ?? (running ? "… arbeitet noch" : "– (keine Abschlussnachricht)"))}</pre></div>
+    </div></details>`;
+}
+const gateRow = (g) => `<div class="step step--gate"><div class="step__sum"><span class="step__name mono">gate</span><span class="step__meta"><span>${esc(fmtDuration(g.waitMs))} gewartet</span>${g.by ? `<span>${g.decision === "allow" ? "freigegeben" : "abgelehnt"} von ${esc(g.by)}</span>` : `<span class="badge badge--warning">offen</span>`}</span></div></div>`;
+
 async function pageFlow(id) {
-  const [flow, events, p] = await Promise.all([api(`/flows/${encodeURIComponent(id)}`), api(`/flows/${encodeURIComponent(id)}/events`), api(`/pipeline/flows/${encodeURIComponent(id)}`).catch(() => null)]);
+  disposeMap();
+  const [flow, events, p, detail] = await Promise.all([api(`/flows/${encodeURIComponent(id)}`), api(`/flows/${encodeURIComponent(id)}/events`), api(`/pipeline/flows/${encodeURIComponent(id)}`).catch(() => null), api(`/flows/${encodeURIComponent(id)}/steps`).catch(() => null)]);
   const goal = p?.goal ?? `Flow ${short(id)}`; const state = p?.state ?? {};
+  const steps = detail?.steps ?? []; const gate = detail?.gate ?? null;
+  const sum = (k) => steps.reduce((a, s) => a + (k(s) ?? 0), 0);
+  const totals = steps.length ? `${esc(fmtDuration(sum((s) => s.durationMs)))} Arbeit · ${esc(fmtTokens(sum((s) => s.tokens?.total)))} Tokens · ${esc(usd(sum((s) => s.cost)))}` : "Dauer und Tokens je Bogen";
   setTitle("Flow", short(id));
   page().innerHTML = `
     <div class="detail-head">
@@ -198,6 +220,8 @@ async function pageFlow(id) {
       <div class="detail-meta"><span>${esc(state.repo ?? "")}</span><span>${esc(id)}</span><span>Revision ${esc(flow.revision)}</span>${statusDot(flow.status)}</div>
     </div>
     ${strip(flow, true)}
+    ${p ? card("Karte", "activity", `<div class="map map--flow" id="map"></div>`, `<span class="dim" style="font-size:12px">${totals}</span>`) : ""}
+    ${card("Schritte", "cpu", steps.length ? `<div class="steps">${steps.map(stepRow).join("")}${gate ? gateRow(gate) : ""}</div>` : `<div class="empty">Kein Schrittprotokoll — der Flow lief vor dieser Version des Plugins.</div>`, `<span class="dim" style="font-size:12px">Frage, Antwort, Dauer, Tokens je Schritt</span>`)}
     ${flow.gateOpen ? `<div class="alert alert--warning">${icon("shield")}<div style="flex:1"><div style="color:var(--text);margin-bottom:8px">${p?.wait?.review === "request_changes_unresolved" ? `Die Review verlangt nach ${esc(p?.state?.reviewRounds ?? 2)} Runden immer noch Änderungen — jetzt entscheidest du.` : `Review ist durch${(p?.state?.reviewRounds ?? 0) > 0 ? ` nach ${esc(p.state.reviewRounds + 1)} Runden` : ""} — die Pipeline wartet vor <span class="mono">ship</span>.`} Sieh dir <span class="mono">.agentops/review.md</span> an, dann entscheide.</div><div class="actions"><button class="btn btn--success btn--sm" id="btn-allow" type="button">${icon("check", "icon icon--sm")}Freigeben</button><button class="btn btn--danger btn--sm" id="btn-deny" type="button">${icon("x", "icon icon--sm")}Ablehnen</button><span class="dim" style="font-size:12px">als ${esc(me?.displayName ?? "API-Token")}</span></div></div></div>` : ""}
     ${HALTED.has(flow.status) ? `<div class="alert alert--danger">${icon("alert")}<span>Stehen geblieben${p?.blockedSummary ? `: ${esc(p.blockedSummary)}` : ""}.</span></div>` : ""}
     ${flow.status === "running" && p ? `<div class="actions"><button class="btn btn--secondary btn--sm" id="btn-advance" type="button">${icon("play", "icon icon--sm")}Schritt als beendet behandeln</button><span class="dim" style="font-size:12px">nur wenn ein Schritt hängt</span></div>` : ""}
@@ -214,6 +238,14 @@ async function pageFlow(id) {
     try { await api(`/pipeline/flows/${encodeURIComponent(id)}/advance`, { method: "POST", body: {} }); toast("Schritt weitergeschaltet"); setTimeout(route, 800); }
     catch (e) { toast(e.message, "error"); }
   });
+  if (p) {
+    // Die Karte dieses einen Laufs: Dauer und Tokens auf den Bögen; Klick auf eine Soul führt zu ihr im Projekt
+    liveMap = mountProjectMap($("#map"), { onSelect: (step) => {
+      if (SOUL_STEPS.includes(step) && state.repo) { pageProject.tab = step; location.hash = `#/projects/${encodeURIComponent(state.repo)}`; }
+      else if (step === "gate") location.hash = "#/gates";
+    } });
+    liveMap.update([p], { steps: steps.map((s) => ({ step: s.step, attempt: s.attempt, durationMs: s.durationMs ?? (s.startedAt && !s.endedAt ? Date.now() - s.startedAt : null), tokens: s.tokens?.total ?? null })), gate });
+  }
 }
 
 async function decide(id, decision) {
@@ -262,7 +294,11 @@ async function pageProject(name) {
   renderSoul(active);
   // 3D-Karte: Souls als Knoten, Flows als Impulse — alle 5 s frisch, ohne die Seite neu zu bauen
   const mapEl = $("#map");
-  liveMap = mountProjectMap(mapEl);
+  liveMap = mountProjectMap(mapEl, { onSelect: (step) => {
+    // Klick auf eine Soul in der Karte → ihr Editor unten; das Gate → die offenen Freigaben
+    if (SOUL_STEPS.includes(step)) { page().querySelector(`.tab[data-tab="${step}"]`)?.click(); $("#soul-body")?.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    else if (step === "gate") location.hash = "#/gates";
+  } });
   liveMap.update(mine());
   liveMap.timer = setInterval(async () => {
     try { const idx = await pipelineIndex(); const cur = [...idx.values()].filter((f) => f.state?.repo === name); liveMap?.update(cur); const c = $("#map-count"); if (c) c.textContent = `${cur.filter((f) => f.status === "running").length} Flows arbeiten`; } catch {}
@@ -292,6 +328,37 @@ async function pageCosts() {
     ${card("Tokens nach Art", "activity", (c.tokens ?? []).length ? `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Art</th><th class="num">Tokens</th></tr></thead><tbody>${c.tokens.map((t) => `<tr><td class="mono">${esc(t.kind)}</td><td class="num">${Math.round(t.count).toLocaleString("de-DE")}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Keine Daten.</div>`)}`;
 }
 
+// Modell je Agent — main (der Master) und die fünf Schritt-Agenten. Die Liste kommt aus OpenClaws Katalog:
+// nur Anbieter, deren Schlüssel auf dem Server liegt. Andere IDs per Freitext.
+async function pageAgents() {
+  setTitle("Agenten");
+  const d = await api("/agents");
+  const models = d.models ?? []; const agents = d.agents ?? [];
+  const byProvider = new Map();
+  for (const m of models) byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), m]);
+  const providers = [...byProvider.keys()].sort();
+  const known = (key) => models.some((m) => m.key === key);
+  const options = (current) => providers.map((p) => `<optgroup label="${esc(p)}">${byProvider.get(p).map((m) => `<option value="${esc(m.key)}"${m.key === current ? " selected" : ""}${m.available ? "" : " disabled"}>${esc(m.name)} — ${esc(m.key)}${m.available ? "" : " (kein Zugang)"}</option>`).join("")}</optgroup>`).join("")
+    + `<option value="__other"${current && !known(current) ? " selected" : ""}>Anderes Modell (ID eingeben)…</option>`;
+  page().innerHTML = `
+    ${card("Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th></th></tr></thead><tbody>${agents.map((a) => `
+      <tr data-agent="${esc(a.id)}"><td class="strong mono">${esc(a.id)}</td><td>${a.role === "master" ? "Master — OpenClaws Hauptagent (Chat, Delegation)" : `Pipeline-Schritt <span class="mono">${esc(a.step)}</span>`}</td>
+      <td><div class="model-pick"><select class="select" data-model>${options(a.model)}</select><input class="input mono" data-other placeholder="anbieter/modell" value="${esc(a.model ?? "")}"${!a.model || known(a.model) ? " hidden" : ""}></div><span class="sub">${a.explicit ? "im Agenten gesetzt" : "Laufzeit-Standard von OpenClaw"}${a.runtime ? ` · Laufzeit ${esc(a.runtime)}` : ""}</span></td>
+      <td class="num"><button class="btn btn--primary btn--sm" data-save type="button">Speichern</button></td></tr>`).join("")}</tbody></table></div>`,
+      `<span class="dim" style="font-size:12px">${models.length} Modelle von ${providers.length} Anbieter${providers.length === 1 ? "" : "n"}</span>`)}
+    <div class="alert alert--info">${icon("alert")}<span>Zur Auswahl stehen die Modelle der Anbieter, deren Schlüssel in der <span class="mono">.env</span> auf dem Server liegt — <span class="mono">OPENAI_API_KEY</span>, <span class="mono">ANTHROPIC_API_KEY</span>, <span class="mono">GEMINI_API_KEY</span>, <span class="mono">OPENROUTER_API_KEY</span> —, danach <span class="mono">docker compose --profile openclaw up -d openclaw</span>. Eine Änderung gilt ab dem nächsten Lauf; OpenClaw lädt die Konfiguration ohne Neustart.${me && !me.root ? " Ändern darf nur Root." : ""}</span></div>`;
+  page().querySelectorAll("tr[data-agent]").forEach((tr) => {
+    const sel = tr.querySelector("[data-model]"), other = tr.querySelector("[data-other]");
+    sel.addEventListener("change", () => { other.hidden = sel.value !== "__other"; if (sel.value !== "__other") other.value = sel.value; else other.focus(); });
+    tr.querySelector("[data-save]").addEventListener("click", async () => {
+      const model = (sel.value === "__other" ? other.value : sel.value).trim();
+      if (!model) return toast("Modell-ID fehlt", "error");
+      try { await api(`/agents/${encodeURIComponent(tr.dataset.agent)}`, { method: "PUT", body: { model } }); toast(`${tr.dataset.agent} → ${model}`); pageAgents(); }
+      catch (e) { toast(e.message, "error"); }
+    });
+  });
+}
+
 // ---------- Routing ----------
 let refresh = null;
 async function route() {
@@ -309,6 +376,7 @@ async function route() {
     else if (p === "flows") { await pageFlows(); refresh = setInterval(() => pageFlows().catch(() => {}), 10000); }
     else if (p === "gates") { await pageGates(); refresh = setInterval(() => pageGates().catch(() => {}), 10000); }
     else if (p === "projects" && arg) await pageProject(arg);
+    else if (p === "agents") await pageAgents();
     else if (p === "costs") await pageCosts();
     else { location.hash = "#/"; return; }
     loadRail();

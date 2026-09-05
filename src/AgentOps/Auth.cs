@@ -164,6 +164,10 @@ public static class Auth
         });
     }
 
+    /// <summary>Konfiguration (Modelle je Agent) ändert nur Root — oder ein Skript mit Bearer-Token, das keine Session hat.</summary>
+    public static bool MayConfigure(HttpContext ctx, Options o) =>
+        ctx.User.Identity?.IsAuthenticated != true || (o.RootId is not null && ctx.User.FindFirstValue(ClaimTypes.NameIdentifier) == o.RootId);
+
     /// <summary>Der Name, unter dem eine Entscheidung im Log steht: Discord-Anzeigename der Session, sonst der übergebene.</summary>
     public static string ActorName(HttpContext ctx, string? fallback) =>
         ctx.User.Identity?.IsAuthenticated == true

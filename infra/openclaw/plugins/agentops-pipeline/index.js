@@ -5,16 +5,21 @@
 // den Schritten läuft über Dateien in .agentops/ im Repo, nicht über ein Modell in der Mitte.
 // Der Flow ist ein managed TaskFlow — OpenClaw schreibt ihn nach flow_runs, der Connector liest ihn.
 // Das Gate vor ship ist ein waiting-Zustand mit waitJson.kind = "gate"; freigegeben wird per HTTP.
+// Dazu: Modell je Agent lesen und setzen — über OpenClaws eigene CLI (validierter Schreibvorgang, Hot-Reload).
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
+const execFileAsync = promisify(execFile);
 const CONTROLLER_ID = "agentops-pipeline";
 const STEPS = ["plan", "code", "test", "review", "ship"];
 const GATE_BEFORE = "ship";
 const ROUTE = "/plugins/agentops-pipeline";
 const MAX_REVIEW_ROUNDS = 2;   // review → code → test → review, höchstens so oft; danach entscheidet der Mensch am Gate
+const MODEL_ID = /^[a-z0-9][a-z0-9_-]{0,40}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;   // provider/model
 
 // Die Schritte sprechen über Dateien im Repo (§16). Ihr Urteil steht in der letzten nicht-leeren Zeile:
 // test.md → TESTS PASS | TESTS FAIL, review.md → APPROVE | REQUEST_CHANGES.
@@ -65,6 +70,12 @@ function buildMessage(state, step, attempt = 1) {
   ].filter(Boolean).join("\n");
 }
 
+// Modell eines Agenten aus der Konfiguration: Eintrag, sonst Default, sonst OpenClaws Laufzeit-Standard.
+function modelOf(entry, defaults) {
+  const pick = (m) => (typeof m === "string" ? m : m?.primary ?? null);
+  return pick(entry?.model) ?? pick(defaults?.model) ?? null;
+}
+
 export default definePluginEntry({
   id: CONTROLLER_ID,
   name: "Agent-Ops Pipeline",
@@ -74,6 +85,7 @@ export default definePluginEntry({
     const ownerSessionKey = cfg.ownerSessionKey ?? "agent:main:main";
     const reposRoot = cfg.reposRoot ?? "/home/node/repos";
     const agentPrefix = cfg.agentPrefix ?? "pipeline-";   // agents.entries.<prefix><step>
+    const cliPath = cfg.cliPath ?? "/app/openclaw.mjs";    // OpenClaws CLI im Container — für config get/set und models list
     const log = api.logger ?? console;
     const flows = api.runtime.tasks.managedFlows.bindSession({ sessionKey: ownerSessionKey });
 
@@ -118,14 +130,72 @@ export default definePluginEntry({
 
     const mine = () => flows.list().filter((f) => f.controllerId === CONTROLLER_ID);
 
-    async function startStep(flowId, step) {
+    // OpenClaws CLI im selben Container: config get/set schreiben validiert und lösen den Hot-Reload aus.
+    async function cli(...args) {
+      const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], { env: process.env, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 });
+      return stdout;
+    }
+    const agentIds = () => ["main", ...STEPS.map((s) => `${agentPrefix}${s}`)];
+
+    let modelCache = { at: 0, models: [] };
+    async function listModels() {
+      if (Date.now() - modelCache.at < 5 * 60 * 1000) return modelCache.models;
+      const parsed = JSON.parse(await cli("models", "list", "--json"));
+      const models = (parsed.models ?? []).map((m) => ({ key: m.key, name: m.name ?? m.key, provider: String(m.key).split("/")[0], available: m.available !== false && !m.missing, contextWindow: m.contextWindow ?? null, tags: m.tags ?? [] }));
+      modelCache = { at: Date.now(), models };
+      return models;
+    }
+
+    async function listAgents() {
+      const agents = JSON.parse(await cli("config", "get", "agents"));
+      const entries = agents.entries ?? {};
+      return agentIds().map((id) => {
+        const entry = entries[id] ?? {};
+        const model = modelOf(entry, agents.defaults);
+        return {
+          id,
+          role: id === "main" ? "master" : "step",
+          step: id === "main" ? null : id.slice(agentPrefix.length),
+          model,
+          explicit: entry.model != null,
+          runtime: entry.agentRuntime?.id ?? (model ? agents.defaults?.models?.[model]?.agentRuntime?.id : null) ?? null,
+          workspace: entry.workspace ?? null,
+        };
+      });
+    }
+
+    async function setAgentModel(id, model) {
+      if (!agentIds().includes(id)) throw new Error(`unknown agent: ${id}`);
+      if (!MODEL_ID.test(model)) throw new Error("model must look like provider/model");
+      await cli("config", "set", `agents.entries.${id}.model`, model);
+      // OpenAI-Modelle würden standardmäßig den Codex-Harness nehmen, dessen Binary im Image fehlt —
+      // deshalb je Agent die eingebettete Laufzeit festnageln; für andere Anbieter bleibt der Standard.
+      if (model.startsWith("openai/")) await cli("config", "set", `agents.entries.${id}.agentRuntime.id`, "openclaw");
+      else await cli("config", "unset", `agents.entries.${id}.agentRuntime`).catch(() => {});
+      log.info?.(`[pipeline] model of ${id} → ${model}`);
+    }
+
+    // Lebenslauf eines Schritts: stateJson.steps ist eine Liste aller Versuche mit Anfang, Ende, Ausgang und Urteil.
+    // Daraus liest das Cockpit Dauer je Schritt; Frage und Antwort stehen bei OpenClaw (subagent_runs).
+    function closeStep(state, step, event, verdict) {
+      let done = false;
+      const steps = [...(state.steps ?? [])].reverse().map((s) => {
+        if (done || s.step !== step || s.endedAt != null) return s;
+        done = true;
+        return { ...s, endedAt: event.endedAt ?? Date.now(), outcome: event.outcome ?? "ok", ...(verdict ? { verdict } : {}) };
+      }).reverse();
+      return steps;
+    }
+
+    async function startStep(flowId, step, patch = {}) {
       const flow = latest(flowId);
-      const state = flow.stateJson ?? {};
+      const state = { ...(flow.stateJson ?? {}), ...patch };
       const attempt = (state.attempts?.[step] ?? 0) + 1;
 
       const override = projectSoul(state.cwd, step);
+      const sessionKey = runSessionKey(flowId, step, attempt);
       const run = await api.runtime.subagent.run({
-        sessionKey: runSessionKey(flowId, step, attempt),
+        sessionKey,
         message: buildMessage(state, step, attempt),
         ...(override ? { extraSystemPrompt: override } : {}),
         promptMode: "minimal",
@@ -145,6 +215,7 @@ export default definePluginEntry({
         ...state,
         runs: { ...(state.runs ?? {}), [step]: run.runId },
         attempts: { ...(state.attempts ?? {}), [step]: attempt },
+        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: `${agentPrefix}${step}`, soulOverride: Boolean(override), startedAt: Date.now() }],
       };
       const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: step, stateJson: nextState });
       if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${step} not recorded (${result.reason ?? "unknown"})`);
@@ -160,43 +231,48 @@ export default definePluginEntry({
           flowId,
           expectedRevision: flow.revision,
           blockedSummary: `${step} failed (${event.outcome ?? "unknown"})`,
-          stateJson: { ...state, failedStep: step, failedAt: Date.now() },
+          stateJson: { ...state, steps: closeStep(state, step, event), failedStep: step, failedAt: Date.now() },
         });
         log.warn?.(`[pipeline] ${flowId.slice(0, 8)} failed at ${step}`);
         return;
       }
       // Urteile der Schritte lesen — deterministisch, aus den Übergabedateien, nicht aus dem Modell.
+      let verdict = null;
       if (step === "test") {
-        const verdict = lastLine(state.cwd, "test.md");
-        if (verdict.includes("TESTS FAIL")) {
+        const line = lastLine(state.cwd, "test.md");
+        verdict = line.includes("TESTS FAIL") ? "fail" : line.includes("TESTS PASS") ? "pass" : null;
+        if (verdict === "fail") {
           flows.fail({
             flowId,
             expectedRevision: flow.revision,
             blockedSummary: "test: TESTS FAIL — siehe .agentops/test.md",
-            stateJson: { ...state, failedStep: step, failedAt: Date.now(), lastTest: "fail" },
+            stateJson: { ...state, steps: closeStep(state, step, event, verdict), failedStep: step, failedAt: Date.now(), lastTest: "fail" },
           });
           log.warn?.(`[pipeline] ${flowId.slice(0, 8)} halted: tests fail`);
           return;
         }
       }
       if (step === "review") {
-        const verdict = lastLine(state.cwd, "review.md");
+        const line = lastLine(state.cwd, "review.md");
+        verdict = line.includes("REQUEST_CHANGES") ? "request_changes" : line.includes("APPROVE") ? "approve" : null;
+      }
+      const steps = closeStep(state, step, event, verdict);
+
+      if (step === "review") {
         const rounds = (state.reviewRounds ?? 0) + 1;
-        if (verdict.includes("REQUEST_CHANGES") && rounds <= MAX_REVIEW_ROUNDS) {
+        if (verdict === "request_changes" && rounds <= MAX_REVIEW_ROUNDS) {
           // Zurück nach code: der Code-Agent liest review.md, dann test und review erneut.
-          flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: step, stateJson: { ...state, reviewRounds: rounds, lastReview: "request_changes" } });
           log.info?.(`[pipeline] ${flowId.slice(0, 8)} review requested changes (round ${rounds}/${MAX_REVIEW_ROUNDS}) → code`);
-          await startStep(flowId, "code");
+          await startStep(flowId, "code", { steps, reviewRounds: rounds, lastReview: "request_changes" });
           return;
         }
-        const cur = latest(flowId);
-        flows.resume({ flowId, expectedRevision: cur.revision, status: "running", currentStep: step, stateJson: { ...cur.stateJson, reviewRounds: rounds, lastReview: verdict.includes("REQUEST_CHANGES") ? "request_changes_unresolved" : "approve" } });
+        flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: step, stateJson: { ...state, steps, reviewRounds: rounds, lastReview: verdict === "request_changes" ? "request_changes_unresolved" : "approve" } });
       }
 
       const current = latest(flowId);
       const next = STEPS[STEPS.indexOf(step) + 1];
       if (!next) {
-        flows.finish({ flowId, expectedRevision: current.revision, stateJson: { ...current.stateJson, finishedAt: Date.now() } });
+        flows.finish({ flowId, expectedRevision: current.revision, stateJson: { ...current.stateJson, steps, finishedAt: Date.now() } });
         log.info?.(`[pipeline] ${flowId.slice(0, 8)} finished`);
         return;
       }
@@ -206,12 +282,12 @@ export default definePluginEntry({
           expectedRevision: current.revision,
           currentStep: "gate",
           waitJson: { kind: "gate", step: next, requestedAt: Date.now(), review: current.stateJson?.lastReview ?? null },
-          stateJson: { ...current.stateJson, gate: { status: "pending", step: next, requestedAt: Date.now() } },
+          stateJson: { ...current.stateJson, steps, gate: { status: "pending", step: next, requestedAt: Date.now() } },
         });
         log.info?.(`[pipeline] ${flowId.slice(0, 8)} waiting at gate before ${next}`);
         return;
       }
-      await startStep(flowId, next);
+      await startStep(flowId, next, { steps });
     }
 
     async function decideGate(flowId, decision, by) {
@@ -251,6 +327,20 @@ export default definePluginEntry({
 
           if (req.method === "GET" && rest.length === 0) return json(res, 200, { flows: mine().map(view) });
 
+          // Agenten und ihre Modelle — main (der Master) und die Schritt-Agenten
+          if (req.method === "GET" && rest[0] === "agents" && rest.length === 1) {
+            const [agents, models] = await Promise.all([listAgents(), listModels().catch((e) => { log.warn?.(`[pipeline] models list: ${e.message}`); return []; })]);
+            // Ohne eigenen Eintrag gilt OpenClaws Laufzeit-Standard — der Katalog markiert ihn mit dem Tag "default".
+            const fallback = models.find((m) => m.tags.includes("default"))?.key ?? null;
+            for (const a of agents) if (a.model == null) a.model = fallback;
+            return json(res, 200, { agents, models });
+          }
+          if (req.method === "PUT" && rest[0] === "agents" && rest.length === 2) {
+            const body = await readJson(req);
+            await setAgentModel(rest[1], String(body.model ?? "").trim());
+            return json(res, 200, (await listAgents()).find((a) => a.id === rest[1]));
+          }
+
           if (req.method === "POST" && rest[0] === "start" && rest.length === 1) {
             const body = await readJson(req);
             const repo = String(body.repo ?? "").trim();
@@ -265,7 +355,7 @@ export default definePluginEntry({
               status: "running",
               currentStep: "plan",
               notifyPolicy: "silent",
-              stateJson: { repo, cwd, goal, runs: {}, attempts: {}, startedAt: Date.now() },
+              stateJson: { repo, cwd, goal, runs: {}, attempts: {}, steps: [], startedAt: Date.now() },
             });
             const flow = created?.flow ?? created;
             if (!flow?.flowId) return json(res, 500, { error: "createManaged returned no flow", detail: created });

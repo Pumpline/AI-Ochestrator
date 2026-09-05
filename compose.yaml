@@ -100,7 +100,11 @@ services:
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:?OPENCLAW_GATEWAY_TOKEN fehlt in .env}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       # Provider-Schlüssel nur als Env, nie in openclaw.json. Leer = Gateway läuft, kann aber keine Agenten starten.
+      # Jeder gesetzte Schlüssel bringt die Modelle seines Anbieters in die Auswahl (Cockpit → Agenten).
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       # Konfig, State (state/openclaw.sqlite — das liest der Connector), Workspace
       - ${OPENCLAW_HOME_DIR:-./fixtures/openclaw-home}:/home/node/.openclaw
@@ -133,6 +137,9 @@ services:
       # Leer = /api antwortet 503. Nie offen.
       Api__Token: ${API_TOKEN:-}
       OpenClaw__StatePath: /openclaw/state/openclaw.sqlite
+      # Transkripte der Schritt-Agenten (Tokens und Kosten je Lauf), gleiche Regel wie beim State: rw-Mount, ro-Verbindung
+      OpenClaw__AgentsDir: /openclaw/agents
+      Pipeline__AgentPrefix: pipeline-
       # Gateway als Compose-Dienst im selben Netz (profile openclaw)
       OpenClaw__GatewayUrl: ws://openclaw:18789
       OpenClaw__GatewayToken: ${OPENCLAW_GATEWAY_TOKEN:-}
@@ -159,6 +166,7 @@ services:
       # Default zeigt auf einen leeren lokalen Ordner, damit `docker compose up` ohne Profil nicht an
       # der Interpolation scheitert (Compose wertet ${..:?} vor den Profilen aus). Auf srv1: $OPENCLAW_HOME_DIR/state.
       - ${OPENCLAW_STATE_DIR:-./fixtures/openclaw-state}:/openclaw/state
+      - ${OPENCLAW_HOME_DIR:-./fixtures/openclaw-home}/agents:/openclaw/agents
       # Fixtures für --load (nicht im Image, .dockerignore)
       - ./fixtures:/app/fixtures:ro
     extra_hosts:

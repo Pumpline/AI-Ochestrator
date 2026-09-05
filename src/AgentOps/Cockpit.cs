@@ -3,6 +3,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using AgentOps.OpenClaw;
+using Microsoft.Data.Sqlite;
 
 namespace AgentOps;
 
@@ -94,11 +96,95 @@ public static class Cockpit
         });
 
         api.MapGet("/costs", async (CostsClient costs, CancellationToken ct) => Results.Ok(await costs.SummaryAsync(ct)));
+
+        // Agenten und ihre Modelle: lesen dürfen alle, setzen nur Root (oder ein Skript mit Bearer-Token).
+        // Das Plugin schreibt über OpenClaws CLI — validiert, mit Hot-Reload; das Cockpit hält keine Konfig.
+        api.MapGet("/agents", async (PluginClient plugin, CancellationToken ct) =>
+            await plugin.RelayAsync(HttpMethod.Get, "/agents", null, ct));
+
+        api.MapPut("/agents/{id}", async (HttpContext ctx, Auth.Options auth, PluginClient plugin, string id, ModelBody body, CancellationToken ct) =>
+        {
+            if (!Auth.MayConfigure(ctx, auth)) return Results.Json(new { error = "Modelle ändert nur Root." }, statusCode: StatusCodes.Status403Forbidden);
+            if (string.IsNullOrWhiteSpace(body.Model)) return Results.BadRequest(new { error = "model fehlt" });
+            if (!SafeName.IsMatch(id)) return Results.NotFound();
+            return await plugin.RelayAsync(HttpMethod.Put, $"/agents/{Uri.EscapeDataString(id)}", new { model = body.Model.Trim() }, ct);
+        });
+
+        // Je Schritt eines Laufs: Frage, Antwort, Dauer, Tokens, Kosten. Quellen: der Lebenslauf im Flow-Zustand des
+        // Plugins (stateJson.steps), OpenClaws subagent_runs (Aufgabe, Abschlussnachricht, Zeiten) und das Transkript
+        // des Schritt-Agenten (usage je Assistant-Nachricht, mit Run-ID). Alles nur gelesen.
+        var statePath = config["OpenClaw:StatePath"] ?? "/openclaw/state/openclaw.sqlite";
+        var agentsDir = config["OpenClaw:AgentsDir"] ?? "/openclaw/agents";
+        var agentPrefix = config["Pipeline:AgentPrefix"] ?? "pipeline-";
+        api.MapGet("/flows/{id}/steps", async (PluginClient plugin, string id, CancellationToken ct) =>
+        {
+            using var doc = await plugin.GetJsonAsync($"/{Uri.EscapeDataString(id)}", ct);
+            if (doc is null) return Results.NotFound();
+            var state = OpenClawState.Obj(doc.RootElement, "state");
+            var entries = new List<StepEntry>();
+            if (state.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var s in steps.EnumerateArray())
+                    entries.Add(new(OpenClawState.StrOf(s, "step") ?? "?", (int)(OpenClawState.LongOf(s, "attempt") ?? 1), OpenClawState.StrOf(s, "runId") ?? "",
+                        OpenClawState.LongOf(s, "startedAt"), OpenClawState.LongOf(s, "endedAt"), OpenClawState.StrOf(s, "outcome"), OpenClawState.StrOf(s, "verdict"),
+                        s.TryGetProperty("soulOverride", out var so) && so.ValueKind == JsonValueKind.True));
+            }
+            else if (state.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Object)
+            {
+                // Ältere Flows ohne Lebenslauf: nur der letzte Versuch je Schritt ist bekannt
+                var attempts = OpenClawState.Obj(state, "attempts");
+                foreach (var pr in runs.EnumerateObject())
+                    entries.Add(new(pr.Name, (int)(OpenClawState.LongOf(attempts, pr.Name) ?? 1), pr.Value.GetString() ?? "", null, null, null, null, false));
+                entries.Sort((a, b) => Array.IndexOf(Steps, a.Step).CompareTo(Array.IndexOf(Steps, b.Step)));
+            }
+
+            var result = new List<object>();
+            SqliteConnection? conn = null;
+            try
+            {
+                if (File.Exists(statePath)) { conn = OpenClawState.Open(statePath); await conn.OpenAsync(ct); }
+                foreach (var e in entries)
+                {
+                    var run = conn is null || e.RunId == "" ? null : await OpenClawState.ReadSubagentRunAsync(conn, e.RunId, ct);
+                    var usage = e.RunId == "" ? null : await OpenClawState.ReadRunUsageAsync(Path.Combine(agentsDir, agentPrefix + e.Step, "agent", "openclaw-agent.sqlite"), e.RunId, ct);
+                    var started = e.StartedAt ?? run?.StartedAt;
+                    var ended = e.EndedAt ?? run?.EndedAt;
+                    result.Add(new
+                    {
+                        step = e.Step, attempt = e.Attempt, runId = e.RunId, startedAt = started, endedAt = ended,
+                        durationMs = run?.ElapsedMs ?? (started is not null && ended is not null ? ended - started : null),
+                        outcome = e.Outcome ?? run?.Outcome, verdict = e.Verdict, soulOverride = e.SoulOverride,
+                        prompt = run?.Task, answer = run?.ResultText,
+                        model = usage?.Model,
+                        tokens = usage is null ? null : new { input = usage.Input, output = usage.Output, cacheRead = usage.CacheRead, cacheWrite = usage.CacheWrite, total = usage.Total },
+                        cost = usage?.Cost, calls = usage?.Calls,
+                    });
+                }
+            }
+            finally { if (conn is not null) await conn.DisposeAsync(); }
+
+            object? gate = null;
+            var g = OpenClawState.Obj(state, "gate");
+            if (g.ValueKind == JsonValueKind.Object)
+            {
+                var requested = OpenClawState.LongOf(g, "requestedAt");
+                var decided = OpenClawState.LongOf(g, "decidedAt");
+                gate = new
+                {
+                    status = OpenClawState.StrOf(g, "status"), by = OpenClawState.StrOf(g, "by"), decision = OpenClawState.StrOf(g, "decision"),
+                    requestedAt = requested, decidedAt = decided,
+                    waitMs = requested is null ? null : (decided ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) - requested,
+                };
+            }
+            return Results.Ok(new { steps = result, gate });
+        });
     }
 
     public sealed record SoulBody(string? Text);
     public sealed record RunBody(string? Goal);
     public sealed record GateBody(string? Decision, string? By);
+    public sealed record ModelBody(string? Model);
+    private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride);
 
     private static string SoulPath(string repo, string step) => Path.Combine(repo, ".agentops", "souls", $"{step}.md");
 
@@ -139,6 +225,26 @@ public static class Cockpit
 /// <summary>Relais zum Pipeline-Plugin am OpenClaw-Gateway. Der Gateway-Token bleibt im Container.</summary>
 public sealed class PluginClient(HttpClient http, IConfiguration config)
 {
+    /// <summary>Eine Antwort des Plugins als JSON — null, wenn das Relais aus ist, das Gateway nicht antwortet oder der Status nicht 2xx ist.</summary>
+    public async Task<JsonDocument?> GetJsonAsync(string path, CancellationToken ct)
+    {
+        var token = config["OpenClaw:GatewayToken"];
+        if (string.IsNullOrEmpty(token)) return null;
+        var gateway = (config["OpenClaw:GatewayUrl"] ?? "ws://openclaw:18789").Replace("ws://", "http://").Replace("wss://", "https://").TrimEnd('/');
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{gateway}/plugins/agentops-pipeline{path}");
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        try
+        {
+            using var res = await http.SendAsync(req, ct);
+            if (!res.IsSuccessStatusCode) return null;
+            return JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        {
+            return null;
+        }
+    }
+
     public async Task<IResult> RelayAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
         var token = config["OpenClaw:GatewayToken"];
