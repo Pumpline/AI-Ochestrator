@@ -45,14 +45,14 @@ export function mountProjectMap(container) {
     const geo = name === "gate" ? new THREE.OctahedronGeometry(0.5) : new THREE.SphereGeometry(0.4, 24, 16);
     const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: C.idle, emissive: C.idle, emissiveIntensity: 0.2, roughness: 0.55, metalness: 0.1 }));
     mesh.position.copy(pos[name]); world.add(mesh); nodes[name] = mesh;
-    const l = label(name); l.position.set(pos[name].x, -0.8, pos[name].z); world.add(l); labels[name] = l;
+    const l = label(name); l.position.set(pos[name].x, -1.05, pos[name].z); world.add(l); labels[name] = l;
   });
 
   // Repo in der Mitte
   const center = new THREE.Vector3(0, 0, 0);
   const repo = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.45, 0.7), new THREE.MeshBasicMaterial({ color: C.repo, wireframe: true, transparent: true, opacity: 0.55 }));
   world.add(repo);
-  const repoLabel = label("repo"); repoLabel.position.set(0, -0.75, 0); world.add(repoLabel);
+  const repoLabel = label("repo"); repoLabel.position.set(0, -0.85, 0); world.add(repoLabel);
 
   // Kanten: Bögen zwischen den Nachbarn, dazu die gestrichelte Brücke review → code
   const edges = {}, curves = {};
@@ -111,7 +111,7 @@ export function mountProjectMap(container) {
     for (const n of ORDER) {
       const color = state[n] === "active" ? C.lit : state[n] === "done" ? C.done : state[n] === "gate" ? C.gate : state[n] === "failed" ? C.failed : C.idle;
       paint(n, color, state[n] === "active" || state[n] === "gate" ? 0.9 : state[n] === "done" ? 0.45 : 0.2);
-      world.remove(labels[n]); labels[n] = label(n, counts[n] ? `${counts[n]} ${counts[n] === 1 ? "Flow" : "Flows"}` : ""); labels[n].position.set(pos[n].x, -0.8, pos[n].z); world.add(labels[n]);
+      world.remove(labels[n]); labels[n] = label(n, counts[n] ? `${counts[n]} ${counts[n] === 1 ? "Flow" : "Flows"}` : ""); labels[n].position.set(pos[n].x, -1.05, pos[n].z); world.add(labels[n]);
     }
     for (const [k, line] of Object.entries(edges)) {
       const b = k.split(">")[1];
