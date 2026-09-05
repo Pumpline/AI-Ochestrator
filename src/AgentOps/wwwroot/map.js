@@ -111,7 +111,7 @@ export function mountProjectMap(container, { onSelect } = {}) {
       // Beschriftung außerhalb des Rings, damit sie sich nicht mit Knoten und Brücke überlagert
       let p;
       if (key === "plan") p = pos.plan.clone().add(new THREE.Vector3(0, 0.75, 0));
-      else if (key === "review>code") p = curves[key].getPoint(0.5).add(new THREE.Vector3(0, 0.45, 0));
+      else if (key === "review>code") p = curves[key].getPoint(0.5).add(new THREE.Vector3(0, 0.9, 0));
       else { const m = curves[key].getPoint(0.5); p = new THREE.Vector3(m.x * 1.24, m.y + 0.12, m.z * 1.24); }
       l.position.copy(p); world.add(l); edgeLabels.push(l);
     }
