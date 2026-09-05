@@ -33,26 +33,29 @@ public static class Cockpit
                 .Select(d => new
                 {
                     Name = Path.GetFileName(d),
-                    Souls = Steps.ToDictionary(s => s, s => File.Exists(SoulPath(d, s))),
+                    Souls = FlowNodes(d).ToDictionary(s => s, s => File.Exists(SoulPath(d, s))),
+                    Flow = File.Exists(FlowPath(d)),
                 })
                 .OrderBy(p => p.Name);
             return Results.Ok(projects);
         });
 
+        // Souls je Knoten des Projekt-Flows: Standard = Vorlage (plan, code, …) oder die knappe Standard-Soul für eigene Knoten
         api.MapGet("/projects/{name}/souls", (string name) =>
         {
             if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
-            var souls = Steps.ToDictionary(s => s, s => new
+            var souls = FlowNodes(repo).ToDictionary(s => s, s => new
             {
                 Override = File.Exists(SoulPath(repo, s)) ? File.ReadAllText(SoulPath(repo, s)) : null,
-                Default = File.Exists(Path.Combine(defaultsDir, $"{s}.md")) ? File.ReadAllText(Path.Combine(defaultsDir, $"{s}.md")) : null,
+                Default = File.Exists(Path.Combine(defaultsDir, $"{s}.md")) ? File.ReadAllText(Path.Combine(defaultsDir, $"{s}.md")) : GenericSoul(s),
+                Template = File.Exists(Path.Combine(defaultsDir, $"{s}.md")),
             });
             return Results.Ok(souls);
         });
 
         api.MapPut("/projects/{name}/souls/{step}", async (string name, string step, SoulBody body, CancellationToken ct) =>
         {
-            if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
+            if (!TryRepo(reposRoot, name, out var repo) || !FlowNodes(repo).Contains(step)) return Results.NotFound();
             var text = (body.Text ?? "").Replace("\r\n", "\n").TrimEnd() + "\n";
             var path = SoulPath(repo, step);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -63,7 +66,7 @@ public static class Cockpit
 
         api.MapDelete("/projects/{name}/souls/{step}", async (string name, string step, CancellationToken ct) =>
         {
-            if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
+            if (!TryRepo(reposRoot, name, out var repo) || !FlowNodes(repo).Contains(step)) return Results.NotFound();
             var path = SoulPath(repo, step);
             if (!File.Exists(path)) return Results.NoContent();
             File.Delete(path);
@@ -71,28 +74,48 @@ public static class Cockpit
             return Results.Ok(new { step, commit });
         });
 
-        // Agenten je Projekt: <repo>/.agentops/agents.json — Modell je Schritt, committet wie die Souls.
-        // Das Plugin liest die Datei beim Start eines Schritts; fehlt ein Eintrag, gilt der globale Schritt-Agent.
-        api.MapGet("/projects/{name}/agents", (string name) =>
+        // Der Flow eines Projekts: <repo>/.agentops/flow.json — Agenten (Modell, Effort, Tools), Kanten, Gates, Start.
+        // Gelesen und geprüft vom Plugin (dieselbe Logik, die die Läufe steuert); geschrieben und committet vom Cockpit.
+        // Fehlt die Datei, zeigt das Plugin den Standard-Flow; der erste Schreibvorgang legt sie an und faltet ein
+        // altes .agentops/agents.json hinein.
+        api.MapGet("/projects/{name}/flow", async (PluginClient plugin, string name, CancellationToken ct) =>
+            !TryRepo(reposRoot, name, out _) ? Results.NotFound() : await plugin.RelayAsync(HttpMethod.Get, $"/projects/{Uri.EscapeDataString(name)}/flow", null, ct));
+
+        api.MapPut("/projects/{name}/flow", async (PluginClient plugin, string name, JsonObject body, CancellationToken ct) =>
         {
             if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
-            var cfg = ReadProjectAgents(repo);
-            return Results.Ok(Steps.ToDictionary(s => s, s => ProjectView(cfg, s)));
+            var (flow, path, error) = await ValidateFlowAsync(plugin, body, ct);
+            if (flow is null) return Results.Problem("Plugin nicht erreichbar — der Flow wurde nicht geprüft und nicht gespeichert.", statusCode: StatusCodes.Status502BadGateway);
+            if (error is not null) return Results.BadRequest(new { error });
+            var commit = await WriteProjectFlowAsync(repo, flow, "Flow: im Cockpit bearbeitet", ct);
+            _ = await plugin.RelayAsync(HttpMethod.Post, $"/projects/{Uri.EscapeDataString(name)}/sync", new { }, ct);
+            return Results.Ok(new { commit, flow, path });
         });
 
-        // PUT setzt model, thinking und/oder tools; ein leerer Wert nimmt die Einstellung zurück (dann gilt die Vorlage).
+        // Agenten des Projekts: die Einträge in flow.json — Modell, Effort, Tools je Knoten
+        api.MapGet("/projects/{name}/agents", async (PluginClient plugin, string name, CancellationToken ct) =>
+        {
+            if (!TryRepo(reposRoot, name, out _)) return Results.NotFound();
+            var flow = await LoadFlowAsync(plugin, name, ct);
+            if (flow is null) return Results.Problem("Plugin nicht erreichbar.", statusCode: StatusCodes.Status502BadGateway);
+            var agents = flow["agents"] as JsonObject ?? new JsonObject();
+            return Results.Ok(agents.ToDictionary(p => p.Key, p => AgentView(p.Value as JsonObject)));
+        });
+
+        // PUT setzt model, thinking und/oder tools eines Knotens; ein leerer Wert nimmt die Einstellung zurück (dann gilt die Vorlage).
         // Das Plugin gleicht die Projekt-Agenten danach ab (sync), damit die Änderung nicht erst beim nächsten Lauf sichtbar wird.
         api.MapPut("/projects/{name}/agents/{step}", async (PluginClient plugin, string name, string step, ModelBody body, CancellationToken ct) =>
         {
-            if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
+            if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
             if (body.Model is null && body.Thinking is null && body.Tools is null) return Results.BadRequest(new { error = "model, thinking oder tools fehlt" });
             var model = body.Model?.Trim(); var thinking = body.Thinking?.Trim();
             var tools = body.Tools?.Select(t => t.Trim()).Where(t => t != "").Distinct().ToArray();
             if (!string.IsNullOrEmpty(model) && !ModelId.IsMatch(model)) return Results.BadRequest(new { error = "model: anbieter/modell" });
             if (!string.IsNullOrEmpty(thinking) && !ThinkingLevels.Contains(thinking)) return Results.BadRequest(new { error = $"thinking: {string.Join(" | ", ThinkingLevels)}" });
             if (tools is not null && tools.Any(t => !ToolId.IsMatch(t))) return Results.BadRequest(new { error = "tools: Kennungen wie read, write, exec" });
-            var cfg = ReadProjectAgents(repo);
-            if (cfg[step] is not JsonObject entry) { entry = new JsonObject(); cfg[step] = entry; }
+            var flow = await LoadFlowAsync(plugin, name, ct);
+            if (flow is null) return Results.Problem("Plugin nicht erreichbar.", statusCode: StatusCodes.Status502BadGateway);
+            if (flow["agents"] is not JsonObject agents || agents[step] is not JsonObject entry) return Results.NotFound(new { error = $"{step} ist kein Agent dieses Flows" });
             var changes = new List<string>();
             if (model is not null) { if (model == "") { if (entry.Remove("model")) changes.Add("Modell → Vorlage"); } else { entry["model"] = model; changes.Add($"Modell {model}"); } }
             if (thinking is not null) { if (thinking == "") { if (entry.Remove("thinking")) changes.Add("Effort → Vorlage"); } else { entry["thinking"] = thinking; changes.Add($"Effort {thinking}"); } }
@@ -102,11 +125,10 @@ public static class Cockpit
                 if (tools.Length == 0) { if (entry.Remove("tools")) changes.Add("Tools → Vorlage"); }
                 else { entry["tools"] = new JsonArray(tools.Select(t => (JsonNode)t).ToArray()); if (entry["tools"]!.ToJsonString() != before) changes.Add($"Tools {string.Join("/", tools)}"); }
             }
-            if (entry.Count == 0) cfg.Remove(step);
-            if (changes.Count == 0) return Results.Ok(new { step, view = ProjectView(cfg, step), commit = "unverändert" });
-            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: {string.Join(", ", changes)} (im Cockpit gesetzt)", ct);
+            if (changes.Count == 0) return Results.Ok(new { step, view = AgentView(entry), commit = "unverändert" });
+            var commit = await WriteProjectFlowAsync(repo, flow, $"Agent {step}: {string.Join(", ", changes)} (im Cockpit gesetzt)", ct);
             _ = await plugin.RelayAsync(HttpMethod.Post, $"/projects/{Uri.EscapeDataString(name)}/sync", new { }, ct);
-            return Results.Ok(new { step, view = ProjectView(cfg, step), commit });
+            return Results.Ok(new { step, view = AgentView(entry), commit });
         });
 
         // Die Agenten eines Projekts bei OpenClaw anlegen/abgleichen (ohne Lauf) und zeigen, was gilt
@@ -114,16 +136,6 @@ public static class Cockpit
             !TryRepo(reposRoot, name, out _) ? Results.NotFound() : await plugin.RelayAsync(HttpMethod.Post, $"/projects/{Uri.EscapeDataString(name)}/sync", new { }, ct));
 
         api.MapGet("/tools", async (PluginClient plugin, CancellationToken ct) => await plugin.RelayAsync(HttpMethod.Get, "/tools", null, ct));
-
-        api.MapDelete("/projects/{name}/agents/{step}", async (string name, string step, CancellationToken ct) =>
-        {
-            if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
-            var cfg = ReadProjectAgents(repo);
-            if (cfg[step] is null) return Results.NoContent();
-            cfg.Remove(step);
-            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: Projekt-Einstellungen entfernt", ct);
-            return Results.Ok(new { step, commit });
-        });
 
         // Relais zum Pipeline-Plugin: start und gate. Das Cockpit entscheidet nichts — ein Mensch hat geklickt.
         api.MapGet("/pipeline/flows", async (PluginClient plugin, CancellationToken ct) =>
@@ -251,37 +263,65 @@ public static class Cockpit
     private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride, string? Thinking, string? Agent);
 
     private static string SoulPath(string repo, string step) => Path.Combine(repo, ".agentops", "souls", $"{step}.md");
+    private static string FlowPath(string repo) => Path.Combine(repo, ".agentops", "flow.json");
+    private static string LegacyAgentsPath(string repo) => Path.Combine(repo, ".agentops", "agents.json");
     private static readonly Regex ModelId = new(@"^[a-z0-9][a-z0-9_-]{0,40}/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$", RegexOptions.Compiled);
-    private static string AgentsPath(string repo) => Path.Combine(repo, ".agentops", "agents.json");
-
-    /// <summary>{ "&lt;step&gt;": { "model": "provider/model", … } } — andere Felder bleiben unangetastet, nur model wird gelesen und gesetzt.</summary>
-    private static JsonObject ReadProjectAgents(string repo)
-    {
-        var path = AgentsPath(repo);
-        if (!File.Exists(path)) return new JsonObject();
-        try { return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject(); }
-        catch (JsonException) { return new JsonObject(); }
-    }
+    private static readonly Regex ToolId = new("^[a-z0-9_:-]{1,60}$", RegexOptions.Compiled);
 
     // OpenClaws Thinking-Level, im Cockpit "Effort"
     public static readonly string[] ThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
 
-    private static readonly Regex ToolId = new("^[a-z0-9_:-]{1,60}$", RegexOptions.Compiled);
-
-    private static string? ProjectField(JsonObject cfg, string step, string field) =>
-        cfg[step] is JsonObject o && o[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
-    private static string[]? ProjectTools(JsonObject cfg, string step) =>
-        cfg[step] is JsonObject o && o["tools"] is JsonArray a ? a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s : null).Where(s => s is not null).Select(s => s!).ToArray() : null;
-    private static object ProjectView(JsonObject cfg, string step) =>
-        new { model = ProjectField(cfg, step, "model"), thinking = ProjectField(cfg, step, "thinking"), tools = ProjectTools(cfg, step) };
-
-    private static async Task<string> WriteProjectAgentsAsync(string repo, JsonObject cfg, string message, CancellationToken ct)
+    /// <summary>Die Knoten (Agenten) des Projekt-Flows — aus flow.json, sonst die fünf Schritte des Standard-Flows.</summary>
+    private static string[] FlowNodes(string repo)
     {
-        var path = AgentsPath(repo);
+        var path = FlowPath(repo);
+        if (!File.Exists(path)) return Steps;
+        try
+        {
+            var agents = (JsonNode.Parse(File.ReadAllText(path)) as JsonObject)?["agents"] as JsonObject;
+            var ids = agents?.Select(p => p.Key).Where(k => Regex.IsMatch(k, "^[a-z][a-z0-9_-]{0,30}$")).ToArray();
+            return ids is { Length: > 0 } ? ids : Steps;
+        }
+        catch (JsonException) { return Steps; }
+    }
+
+    /// <summary>Soul für einen Knoten ohne Vorlage — dieselbe knappe Fassung, die das Plugin in den Workspace schreibt.</summary>
+    private static string GenericSoul(string node) =>
+        $"# SOUL — {node}\n\nYou are the \"{node}\" agent of a deterministic pipeline. Read the notes of the earlier steps in .agentops/ and the relevant code, do exactly your part of the work for the goal, and write a short note to .agentops/{node}.md. If your step decides something, end that file with a single verdict line in capitals (for example APPROVE or REQUEST_CHANGES) — the pipeline reads only the last line. Change nothing outside the repository. Be brief.\n";
+
+    private static object AgentView(JsonObject? entry) => new
+    {
+        model = entry?["model"] is JsonValue m && m.TryGetValue<string>(out var ms) ? ms : null,
+        thinking = entry?["thinking"] is JsonValue t && t.TryGetValue<string>(out var ts) ? ts : null,
+        tools = entry?["tools"] is JsonArray a ? a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s : null).Where(s => s is not null).Select(s => s!).ToArray() : null,
+    };
+
+    /// <summary>Der geprüfte Flow des Projekts vom Plugin (flow.json mit Altbestand, sonst Standard) — als bearbeitbares JsonObject.</summary>
+    private static async Task<JsonObject?> LoadFlowAsync(PluginClient plugin, string name, CancellationToken ct)
+    {
+        using var doc = await plugin.GetJsonAsync($"/projects/{Uri.EscapeDataString(name)}/flow", ct);
+        if (doc is null || !doc.RootElement.TryGetProperty("flow", out var flow)) return null;
+        return JsonNode.Parse(flow.GetRawText()) as JsonObject;
+    }
+
+    private static async Task<(JsonObject? Flow, JsonNode? Path, string? Error)> ValidateFlowAsync(PluginClient plugin, JsonObject body, CancellationToken ct)
+    {
+        using var doc = await plugin.PostJsonAsync("/flow/validate", body, ct);
+        if (doc is null) return (null, null, null);
+        var error = doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        var flow = doc.RootElement.TryGetProperty("flow", out var f) ? JsonNode.Parse(f.GetRawText()) as JsonObject : null;
+        var path = doc.RootElement.TryGetProperty("path", out var p) ? JsonNode.Parse(p.GetRawText()) : null;
+        return (flow ?? new JsonObject(), path, error);
+    }
+
+    /// <summary>flow.json schreiben und committen; ein altes agents.json ist damit hineingefaltet und verschwindet im selben Commit.</summary>
+    private static async Task<string> WriteProjectFlowAsync(string repo, JsonObject flow, string message, CancellationToken ct)
+    {
+        var path = FlowPath(repo);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        if (cfg.Count == 0) { if (File.Exists(path)) File.Delete(path); }
-        else await File.WriteAllTextAsync(path, cfg.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n", ct);
-        return await GitCommitAsync(repo, ".agentops/agents.json", message, ct);
+        await File.WriteAllTextAsync(path, flow.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n", ct);
+        if (File.Exists(LegacyAgentsPath(repo))) File.Delete(LegacyAgentsPath(repo));
+        return await GitCommitAsync(repo, [".agentops/flow.json", ".agentops/agents.json"], message, ct);
     }
 
     private static bool TryRepo(string root, string name, out string repo)
@@ -294,13 +334,15 @@ public static class Cockpit
         return true;
     }
 
-    /// <summary>git add + commit für genau eine Datei. Läuft im Container als uid des Repo-Besitzers.</summary>
-    private static async Task<string> GitCommitAsync(string repo, string relPath, string message, CancellationToken ct)
+    /// <summary>git add + commit für genau diese Dateien. Läuft im Container als uid des Repo-Besitzers.</summary>
+    private static Task<string> GitCommitAsync(string repo, string relPath, string message, CancellationToken ct) => GitCommitAsync(repo, [relPath], message, ct);
+
+    private static async Task<string> GitCommitAsync(string repo, string[] relPaths, string message, CancellationToken ct)
     {
-        await Git(repo, ["add", "-A", "--", relPath], ct);
-        var status = await Git(repo, ["status", "--porcelain", "--", relPath], ct);
+        await Git(repo, ["add", "-A", "--", .. relPaths], ct);
+        var status = await Git(repo, ["status", "--porcelain", "--", .. relPaths], ct);
         if (string.IsNullOrWhiteSpace(status)) return "unverändert";
-        await Git(repo, ["-c", "user.name=AgentOps Cockpit", "-c", "user.email=cockpit@agentops.local", "commit", "-q", "-m", message, "--", relPath], ct);
+        await Git(repo, ["-c", "user.name=AgentOps Cockpit", "-c", "user.email=cockpit@agentops.local", "commit", "-q", "-m", message, "--", .. relPaths], ct);
         return (await Git(repo, ["rev-parse", "--short", "HEAD"], ct)).Trim();
     }
 
@@ -322,13 +364,17 @@ public static class Cockpit
 public sealed class PluginClient(HttpClient http, IConfiguration config)
 {
     /// <summary>Eine Antwort des Plugins als JSON — null, wenn das Relais aus ist, das Gateway nicht antwortet oder der Status nicht 2xx ist.</summary>
-    public async Task<JsonDocument?> GetJsonAsync(string path, CancellationToken ct)
+    public Task<JsonDocument?> GetJsonAsync(string path, CancellationToken ct) => SendJsonAsync(HttpMethod.Get, path, null, ct);
+    public Task<JsonDocument?> PostJsonAsync(string path, object body, CancellationToken ct) => SendJsonAsync(HttpMethod.Post, path, body, ct);
+
+    private async Task<JsonDocument?> SendJsonAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
         var token = config["OpenClaw:GatewayToken"];
         if (string.IsNullOrEmpty(token)) return null;
         var gateway = (config["OpenClaw:GatewayUrl"] ?? "ws://openclaw:18789").Replace("ws://", "http://").Replace("wss://", "https://").TrimEnd('/');
-        using var req = new HttpRequestMessage(HttpMethod.Get, $"{gateway}/plugins/agentops-pipeline{path}");
+        using var req = new HttpRequestMessage(method, $"{gateway}/plugins/agentops-pipeline{path}");
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        if (body is not null) req.Content = new StringContent(body is JsonNode n ? n.ToJsonString() : JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         try
         {
             using var res = await http.SendAsync(req, ct);

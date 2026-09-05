@@ -143,9 +143,33 @@ Bestanden 2026-09-05: 10 Events in 4 Streams, Reihenfolge domänenkorrekt, zweit
 
 ## Die Pipeline: OpenClaw-Plugin `agentops-pipeline`
 
-`infra/openclaw/plugins/agentops-pipeline/` — ein OpenClaw-Plugin (ESM, kein Build), das plan → code → test → review →
-**Gate** → ship als *managed TaskFlow* führt. Die Reihenfolge steht im Code (§5, Variante B); jeder Schritt ist ein
-Subagent-Lauf mit eigener Soul (`extraSystemPrompt`), `promptMode: minimal` und `lightContext` — der Kontext bleibt klein.
+`infra/openclaw/plugins/agentops-pipeline/` — ein OpenClaw-Plugin (ESM, kein Build), das die Pipeline eines Projekts als
+*managed TaskFlow* führt. Die Pipeline ist ein **Graph je Projekt** (§5, Variante B): `.agentops/flow.json` nennt die Agenten
+(Knoten), die Gates, den Start und die Kanten — Standardkanten immer, Verzweigungen nur bei einem Urteil in der letzten
+Zeile der Übergabedatei (`on`), mit Obergrenze (`max`); die Ziele `done` und `halt` beenden den Flow oder lassen ihn
+scheitern. Fehlt die Datei, gilt der Standard-Flow plan → code → test → review → **Gate** → ship mit `TESTS FAIL → halt`
+und `REQUEST_CHANGES → code (max 2)`. Regeln: genau eine Standardkante je Knoten, der Hauptweg (Standardkanten ab Start)
+muss ein Gate passieren, bevor er endet — ein Mensch gibt frei. Jeder Schritt ist ein Subagent-Lauf des Projekt-Agenten
+mit eigener Soul (`extraSystemPrompt`), `promptMode: minimal` und `lightContext` — der Kontext bleibt klein.
+
+```json
+{
+  "start": "plan",
+  "agents": { "plan": {}, "code": {}, "test": {}, "security": { "tools": ["read", "exec"] }, "review": {}, "ship": {} },
+  "gates": ["gate"],
+  "edges": [
+    ["plan", "code"], ["code", "test"], ["test", "security"], ["security", "review"], ["review", "gate"], ["gate", "ship"],
+    { "from": "test", "on": "TESTS FAIL", "to": "halt" },
+    { "from": "review", "on": "REQUEST_CHANGES", "to": "code", "max": 2 }
+  ]
+}
+```
+
+Im Cockpit bearbeitet die Projektseite den Flow („Flow des Projekts“: Agenten hinzufügen/entfernen, Gates, Start, Kanten
+verbinden/lösen); das Plugin prüft die Definition (`POST /flow/validate`), das Cockpit committet sie und stößt den Abgleich
+der Projekt-Agenten an. Ein Agent ohne Vorlage (nicht plan/code/test/review/ship) bekommt eine knappe Standard-Soul, die
+Soul im Projekt (`.agentops/souls/<knoten>.md`) legt sich obendrauf. Der Lauf merkt sich in `stateJson` den Graphen
+(`flow`), den Hauptweg (`path`), genommene Kanten (`edgeCounts`) und Schleifen (`loops`).
 Übergabe zwischen den Schritten über Dateien in `.agentops/` im Repo (`plan.md`, `code.md`, `test.md`, `review.md`, `ship.md`),
 nicht über ein Modell in der Mitte. Das Plugin hält keinen Zustand: welcher Lauf zu welchem Flow gehört, steht im Flow
 (`stateJson.runs[currentStep]`) — OpenClaw lädt Plugin-Instanzen mehrfach und neu, ein Speicher im Plugin geht verloren.

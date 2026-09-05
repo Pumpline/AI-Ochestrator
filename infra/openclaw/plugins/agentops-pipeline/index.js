@@ -1,11 +1,13 @@
 // Agent-Ops Pipeline — ein OpenClaw-Plugin.
 //
-// Die Reihenfolge plan → code → test → review → Gate → ship steht hier im Code (§5, Variante B).
-// Jeder Schritt ist ein Subagent-Lauf mit eigener Soul und minimalem Kontext; die Übergabe zwischen
-// den Schritten läuft über Dateien in .agentops/ im Repo, nicht über ein Modell in der Mitte.
+// Die Pipeline ist ein Graph je Projekt (§5, Variante B): Knoten sind Agenten und Gates, Kanten führen von einem
+// Knoten zum nächsten — Standardkanten immer, Verzweigungen nur bei einem Urteil in der letzten Zeile der
+// Übergabedatei (z.B. REQUEST_CHANGES → zurück zu code, höchstens max-mal). Der Graph steht in
+// <repo>/.agentops/flow.json; fehlt die Datei, gilt der Standard-Flow plan → code → test → review → Gate → ship.
+// Jeder Schritt ist ein Subagent-Lauf eines Projekt-Agenten mit eigener Soul und minimalem Kontext; die Übergabe
+// zwischen den Schritten läuft über Dateien in .agentops/ im Repo, nicht über ein Modell in der Mitte.
 // Der Flow ist ein managed TaskFlow — OpenClaw schreibt ihn nach flow_runs, der Connector liest ihn.
-// Das Gate vor ship ist ein waiting-Zustand mit waitJson.kind = "gate"; freigegeben wird per HTTP.
-// Dazu: Modell je Agent lesen und setzen — über OpenClaws eigene CLI (validierter Schreibvorgang, Hot-Reload).
+// Ein Gate ist ein waiting-Zustand mit waitJson.kind = "gate"; freigegeben wird per HTTP, von einem Menschen.
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from "node:fs";
@@ -17,23 +19,136 @@ import { AsyncResource } from "node:async_hooks";
 
 const execFileAsync = promisify(execFile);
 const CONTROLLER_ID = "agentops-pipeline";
-const STEPS = ["plan", "code", "test", "review", "ship"];
-const GATE_BEFORE = "ship";
 const ROUTE = "/plugins/agentops-pipeline";
-const MAX_REVIEW_ROUNDS = 2;   // review → code → test → review, höchstens so oft; danach entscheidet der Mensch am Gate
+const TEMPLATE_STEPS = ["plan", "code", "test", "review", "ship"];   // die Vorlagen-Agenten <prefix><step>
 const MODEL_ID = /^[a-z0-9][a-z0-9_-]{0,40}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;   // provider/model
 // OpenClaws Thinking-Level ("Effort") — je Agent als thinkingDefault
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
 const TOOL_ID = /^[a-z0-9_:-]{1,60}$/;
+const NODE_ID = /^[a-z][a-z0-9_-]{0,30}$/;
+const END_NODES = ["done", "halt"];   // Pseudo-Ziele: Flow beenden / Flow scheitern lassen
 
-// Agenten sind projekt-scoped: jedes Projekt bekommt seine eigenen fünf Schritt-Agenten (agents.entries.<prefix><projekt>-<step>),
-// angelegt vom Plugin beim ersten Lauf, danach mit Modell, Effort und Tools aus .agentops/agents.json synchron gehalten.
+// Agenten sind projekt-scoped: jedes Projekt bekommt seine eigenen Agenten (agents.entries.<prefix><projekt>-<knoten>),
+// angelegt vom Plugin beim ersten Lauf, danach mit Modell, Effort und Tools aus flow.json synchron gehalten.
 // Die globalen Schritt-Agenten (<prefix><step>) sind die Vorlagen: ihre Werte gelten, wo das Projekt nichts sagt.
 const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "projekt";
-const projectAgentId = (prefix, repo, step) => `${prefix}${slug(repo)}-${step}`;
+const projectAgentId = (prefix, repo, node) => `${prefix}${slug(repo)}-${node}`;
 
-// Die Schritte sprechen über Dateien im Repo (§16). Ihr Urteil steht in der letzten nicht-leeren Zeile:
-// test.md → TESTS PASS | TESTS FAIL, review.md → APPROVE | REQUEST_CHANGES.
+// ---------- Flow-Definition ----------
+
+// Der Standard-Flow — genau die Pipeline der ersten Fassung
+function defaultFlow() {
+  return {
+    start: "plan",
+    agents: { plan: {}, code: {}, test: {}, review: {}, ship: {} },
+    gates: ["gate"],
+    edges: [
+      ["plan", "code"], ["code", "test"], ["test", "review"], ["review", "gate"], ["gate", "ship"],
+      { from: "test", on: "TESTS FAIL", to: "halt" },
+      { from: "review", on: "REQUEST_CHANGES", to: "code", max: 2 },
+    ],
+  };
+}
+
+// Eine Definition in ihre feste Form bringen: gültige Knoten, Kanten als {from, to, on, max}, Start
+function normalizeFlow(def) {
+  const agents = {};
+  for (const [id, cfg] of Object.entries(def?.agents ?? {})) {
+    if (!NODE_ID.test(id) || END_NODES.includes(id)) continue;
+    const c = cfg && typeof cfg === "object" ? cfg : {};
+    agents[id] = {
+      ...(typeof c.model === "string" && MODEL_ID.test(c.model) ? { model: c.model } : {}),
+      ...(typeof c.thinking === "string" && THINKING_LEVELS.includes(c.thinking) ? { thinking: c.thinking } : {}),
+      ...(Array.isArray(c.tools) && c.tools.some((t) => typeof t === "string" && TOOL_ID.test(t)) ? { tools: c.tools.filter((t) => typeof t === "string" && TOOL_ID.test(t)) } : {}),
+    };
+  }
+  const gates = [...new Set((Array.isArray(def?.gates) ? def.gates : []).filter((g) => typeof g === "string" && NODE_ID.test(g) && !agents[g] && !END_NODES.includes(g)))];
+  const edges = [];
+  for (const e of Array.isArray(def?.edges) ? def.edges : []) {
+    const edge = Array.isArray(e) ? { from: e[0], to: e[1] } : e && typeof e === "object" ? e : null;
+    if (!edge || typeof edge.from !== "string" || typeof edge.to !== "string") continue;
+    edges.push({
+      from: edge.from, to: edge.to,
+      on: typeof edge.on === "string" && edge.on.trim() ? edge.on.trim().toUpperCase() : null,
+      max: Number.isInteger(edge.max) && edge.max > 0 ? edge.max : null,
+    });
+  }
+  const ids = Object.keys(agents);
+  const start = typeof def?.start === "string" && agents[def.start] ? def.start : ids[0] ?? null;
+  return { start, agents, gates, edges };
+}
+
+// Prüfung: Knoten bekannt, Start vorhanden, der Hauptweg (Standardkanten ab Start) erreicht ein Gate vor dem Ende
+function validateFlow(flow) {
+  if (!flow.start) return "Der Flow hat keinen Agenten.";
+  const known = new Set([...Object.keys(flow.agents), ...flow.gates, ...END_NODES]);
+  for (const e of flow.edges) {
+    if (!known.has(e.from) || !known.has(e.to)) return `Kante ${e.from} → ${e.to}: unbekannter Knoten.`;
+    if (END_NODES.includes(e.from)) return `Kante von ${e.from}: von einem Ende führt nichts weiter.`;
+  }
+  for (const id of [...Object.keys(flow.agents), ...flow.gates]) {
+    const defaults = flow.edges.filter((e) => e.from === id && !e.on).length;
+    if (defaults > 1) return `${id} hat ${defaults} Standardkanten — erlaubt ist eine.`;
+  }
+  const seen = new Set(); let cur = flow.start; let gated = false;
+  while (cur && !END_NODES.includes(cur)) {
+    if (seen.has(cur)) return `Der Hauptweg dreht sich im Kreis bei ${cur}.`;
+    seen.add(cur);
+    if (flow.gates.includes(cur)) gated = true;
+    cur = flow.edges.find((e) => e.from === cur && !e.on)?.to ?? "done";
+  }
+  if (cur === "halt") return "Der Hauptweg endet in halt.";
+  if (!gated) return "Kein Gate auf dem Hauptweg — vor dem Ende muss ein Mensch freigeben.";
+  return null;
+}
+
+// Der Hauptweg: Knoten in Reihenfolge der Standardkanten ab Start, danach die nur über Verzweigungen erreichbaren
+function flowPath(flow) {
+  const out = []; const seen = new Set(); let cur = flow.start;
+  while (cur && !END_NODES.includes(cur) && !seen.has(cur)) { seen.add(cur); out.push(cur); cur = flow.edges.find((e) => e.from === cur && !e.on)?.to; }
+  for (const id of [...Object.keys(flow.agents), ...flow.gates]) if (!seen.has(id)) out.push(id);
+  return out;
+}
+
+// Ältere Projekte: .agentops/agents.json trägt Modell, Effort, Tools je Schritt — wird in den Flow gemischt, flow.json gewinnt
+function legacyAgents(cwd) {
+  const file = path.join(cwd, ".agentops", "agents.json");
+  try {
+    if (!existsSync(file)) return {};
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+// Die Flow-Definition eines Projekts von der Platte: flow.json, sonst der Standard-Flow
+function loadFlow(cwd) {
+  let def = null; let source = "default";
+  const file = path.join(cwd, ".agentops", "flow.json");
+  try {
+    if (existsSync(file)) { def = JSON.parse(readFileSync(file, "utf8")); source = "flow.json"; }
+  } catch (error) {
+    return { flow: normalizeFlow(defaultFlow()), source: "default", error: `flow.json ist kein gültiges JSON: ${error?.message ?? error}` };
+  }
+  const flow = normalizeFlow(def && typeof def === "object" && !Array.isArray(def) ? def : defaultFlow());
+  for (const [id, cfg] of Object.entries(legacyAgents(cwd))) if (flow.agents[id] && cfg && typeof cfg === "object") flow.agents[id] = { ...normalizeFlow({ agents: { [id]: cfg } }).agents[id], ...flow.agents[id] };
+  return { flow, source, error: validateFlow(flow) };
+}
+
+// Nach einem Schritt: welche Kante? Erst eine Verzweigung, deren Urteil in der letzten Zeile steht und deren
+// Obergrenze noch nicht erreicht ist, sonst die Standardkante, sonst das Ende.
+function nextEdge(flow, state, node, line) {
+  const counts = state.edgeCounts ?? {};
+  const matching = flow.edges.filter((e) => e.from === node && e.on && line.includes(e.on));
+  const branch = matching.find((e) => e.max == null || (counts[`${e.from}>${e.to}`] ?? 0) < e.max);
+  const edge = branch ?? flow.edges.find((e) => e.from === node && !e.on) ?? { from: node, to: "done", on: null, max: null };
+  return { edge, exhausted: !branch && matching.length > 0 ? matching[0] : null };
+}
+
+// ---------- Dateien im Repo ----------
+
+// Die Schritte sprechen über Dateien im Repo (§16). Ihr Urteil steht in der letzten nicht-leeren Zeile von .agentops/<knoten>.md.
 function lastLine(cwd, file) {
   try {
     const text = readFileSync(path.join(cwd, ".agentops", file), "utf8");
@@ -44,11 +159,9 @@ function lastLine(cwd, file) {
   }
 }
 
-// Die Souls sind eigene OpenClaw-Agenten (agents.entries.pipeline-<step>) mit SOUL.md im Workspace —
-// infra/openclaw/souls/<step>.md ist die Quelle. Ein Projekt kann sie überschreiben:
-// <repo>/.agentops/souls/<step>.md wird als extraSystemPrompt oben draufgelegt.
-function projectSoul(cwd, step) {
-  const file = path.join(cwd, ".agentops", "souls", `${step}.md`);
+// Ein Projekt kann die Soul eines Agenten überschreiben: <repo>/.agentops/souls/<knoten>.md wird als extraSystemPrompt oben draufgelegt.
+function projectSoul(cwd, node) {
+  const file = path.join(cwd, ".agentops", "souls", `${node}.md`);
   try {
     return existsSync(file) ? readFileSync(file, "utf8").trim() || undefined : undefined;
   } catch {
@@ -56,18 +169,11 @@ function projectSoul(cwd, step) {
   }
 }
 
-// Agenten je Projekt: <repo>/.agentops/agents.json — { "<step>": { "model": "provider/model", "thinking": "high" } }.
-// Fehlt ein Eintrag, gilt der globale Schritt-Agent (agents.entries.<prefix><step>) mit Modell und thinkingDefault.
-function projectAgents(cwd) {
-  const file = path.join(cwd, ".agentops", "agents.json");
-  try {
-    if (!existsSync(file)) return {};
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
+// Soul für einen Knoten ohne Vorlage — knapp, mit der einen Regel, die die Pipeline braucht: das Urteil in der letzten Zeile
+const genericSoul = (node) => `# SOUL — ${node}
+
+You are the "${node}" agent of a deterministic pipeline. Read the notes of the earlier steps in .agentops/ and the relevant code, do exactly your part of the work for the goal, and write a short note to .agentops/${node}.md. If your step decides something, end that file with a single verdict line in capitals (for example APPROVE or REQUEST_CHANGES) — the pipeline reads only the last line. Change nothing outside the repository. Be brief.
+`;
 
 function json(res, status, body) {
   res.statusCode = status;
@@ -82,14 +188,15 @@ async function readJson(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-function buildMessage(state, step, attempt = 1) {
-  const i = STEPS.indexOf(step);
-  const round = (state.reviewRounds ?? 0) + 1;
+function buildMessage(state, node, attempt = 1) {
+  const pathNodes = state.path ?? Object.keys(state.flow?.agents ?? {});
+  const i = pathNodes.indexOf(node);
   return [
     `Goal: ${state.goal}`,
     `Repository (working directory): ${state.cwd}`,
-    `Pipeline step: ${step} (${i + 1}/${STEPS.length}). Notes of earlier steps are in .agentops/.`,
-    step === "review" ? `Review round: ${round}.` : attempt > 1 ? `Attempt ${attempt} of this step — earlier notes and review findings are in .agentops/.` : null,
+    `Pipeline step: ${node}${i >= 0 ? ` (${i + 1}/${pathNodes.length})` : ""}. Pipeline: ${pathNodes.join(" → ")}. Notes of earlier steps are in .agentops/.`,
+    `Write your notes to .agentops/${node}.md; if this step gives a verdict, put it in the last line.`,
+    attempt > 1 ? `Attempt ${attempt} of this step — earlier notes and findings are in .agentops/.` : null,
     `Work only inside the repository. When you are done, stop.`,
   ].filter(Boolean).join("\n");
 }
@@ -103,7 +210,7 @@ function modelOf(entry, defaults) {
 export default definePluginEntry({
   id: CONTROLLER_ID,
   name: "Agent-Ops Pipeline",
-  description: "Deterministische Pipeline plan → code → test → review → Gate → ship als managed TaskFlow.",
+  description: "Deterministische Pipeline als Graph je Projekt (Agenten, Kanten, Gates) als managed TaskFlow.",
   register(api) {
     const cfg = api.pluginConfig ?? {};
     const ownerSessionKey = cfg.ownerSessionKey ?? "agent:main:main";
@@ -160,13 +267,14 @@ export default definePluginEntry({
     });
 
     const mine = () => flows.list().filter((f) => f.controllerId === CONTROLLER_ID);
+    const flowOf = (state) => state.flow ?? normalizeFlow(defaultFlow());   // ältere Flows kennen nur den Standard
 
     // OpenClaws CLI im selben Container: config get/set schreiben validiert und lösen den Hot-Reload aus.
     async function cli(...args) {
       const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], { env: process.env, timeout: 60_000, maxBuffer: 16 * 1024 * 1024 });
       return stdout;
     }
-    const agentIds = () => ["main", ...STEPS.map((s) => `${agentPrefix}${s}`)];
+    const agentIds = () => ["main", ...TEMPLATE_STEPS.map((s) => `${agentPrefix}${s}`)];
 
     // Gateway-Methoden über die CLI (api.runtime.gateway.request bleibt gebündelten Plugins vorbehalten).
     async function gatewayCall(method, params) {
@@ -208,7 +316,7 @@ export default definePluginEntry({
 
     // OpenAI-Modelle würden standardmäßig den Codex-Harness nehmen, dessen Binary im Image fehlt — deshalb
     // die eingebettete Laufzeit festnageln. Das geht nur je Modell (agents.defaults.models), nicht je Agent,
-    // und gilt auch für Modelle, die ein Projekt in .agentops/agents.json wählt.
+    // und gilt auch für Modelle, die ein Projekt in flow.json wählt.
     let pinned = null;
     async function ensureRuntimePin(model) {
       if (!model.startsWith("openai/")) return;
@@ -272,23 +380,20 @@ export default definePluginEntry({
       return groups;
     }
 
-    // Die Agenten eines Projekts anlegen und mit Vorlage + .agentops/agents.json abgleichen. Liefert step → agentId.
+    // Die Agenten eines Projekts anlegen und mit Vorlage + flow.json abgleichen. Liefert knoten → agentId.
     // Wird vor jedem Schritt aufgerufen; ohne Änderung ist es ein config get (~1 s), sonst ein Patch mit Hot-Reload.
-    async function ensureProjectAgents(repo, cwd) {
+    async function ensureProjectAgents(repo, cwd, flow) {
       const agents = JSON.parse(await cli("config", "get", "agents"));
       const entries = agents.entries ?? {};
-      const wanted = projectAgents(cwd);
       const patch = {}; const creations = []; const ids = {}; const resolved = {};
-      for (const step of STEPS) {
-        const id = projectAgentId(agentPrefix, repo, step); ids[step] = id;
-        const template = entries[`${agentPrefix}${step}`] ?? {};
-        const pa = wanted[step] && typeof wanted[step] === "object" ? wanted[step] : {};
-        const model = typeof pa.model === "string" && MODEL_ID.test(pa.model) ? pa.model : modelOf(template, agents.defaults);
-        const thinking = typeof pa.thinking === "string" && THINKING_LEVELS.includes(pa.thinking) ? pa.thinking : template.thinkingDefault ?? null;
-        const toolList = Array.isArray(pa.tools) ? pa.tools.filter((t) => typeof t === "string" && TOOL_ID.test(t)) : [];
-        const tools = toolList.length ? { allow: toolList } : template.tools ?? null;
+      for (const [node, pa] of Object.entries(flow.agents)) {
+        const id = projectAgentId(agentPrefix, repo, node); ids[node] = id;
+        const template = entries[`${agentPrefix}${node}`] ?? null;   // nur die bekannten Schritte haben eine Vorlage
+        const model = pa.model ?? modelOf(template ?? {}, agents.defaults);
+        const thinking = pa.thinking ?? template?.thinkingDefault ?? null;
+        const tools = pa.tools?.length ? { allow: pa.tools } : template?.tools ?? null;
         const workspace = `${homeDir}/workspace-${id}`;
-        resolved[step] = { model, thinking, tools: tools?.allow ?? null, workspace, templateWorkspace: template.workspace ?? `${homeDir}/workspace-${agentPrefix}${step}` };
+        resolved[node] = { model, thinking, tools: tools?.allow ?? null, workspace, templateWorkspace: template ? template.workspace ?? `${homeDir}/workspace-${agentPrefix}${node}` : null };
         if (model) await ensureRuntimePin(model);
         const current = entries[id];
         if (!current) creations.push({ id, workspace, model });
@@ -308,10 +413,16 @@ export default definePluginEntry({
         await configPatch({ agents: { entries: patch } });
         log.info?.(`[pipeline] agents of ${repo} updated: ${Object.entries(patch).map(([id, d]) => `${id} ${Object.keys(d).join("+")}`).join(", ")}`);
       }
-      // Die Soul der Vorlage ist die Soul des Projekt-Agenten; die Projekt-Soul kommt als extraSystemPrompt obendrauf.
-      for (const step of STEPS) {
-        const src = path.join(resolved[step].templateWorkspace, "SOUL.md");
-        try { if (existsSync(src)) { mkdirSync(resolved[step].workspace, { recursive: true }); copyFileSync(src, path.join(resolved[step].workspace, "SOUL.md")); } } catch (error) { log.warn?.(`[pipeline] soul sync ${step}: ${error?.message ?? error}`); }
+      // Die Soul der Vorlage ist die Soul des Projekt-Agenten; ohne Vorlage eine knappe Standard-Soul (nur wenn keine da ist).
+      // Die Projekt-Soul (.agentops/souls/<knoten>.md) kommt in beiden Fällen als extraSystemPrompt obendrauf.
+      for (const [node, r] of Object.entries(resolved)) {
+        try {
+          mkdirSync(r.workspace, { recursive: true });
+          const dst = path.join(r.workspace, "SOUL.md");
+          const src = r.templateWorkspace ? path.join(r.templateWorkspace, "SOUL.md") : null;
+          if (src && existsSync(src)) copyFileSync(src, dst);
+          else if (!existsSync(dst)) writeFileSync(dst, genericSoul(node));
+        } catch (error) { log.warn?.(`[pipeline] soul sync ${node}: ${error?.message ?? error}`); }
       }
       return { ids, resolved };
     }
@@ -328,125 +439,120 @@ export default definePluginEntry({
       return steps;
     }
 
-    async function startStep(flowId, step, patch = {}) {
-      const flow = latest(flowId);
-      const state = { ...(flow.stateJson ?? {}), ...patch };
-      const attempt = (state.attempts?.[step] ?? 0) + 1;
+    async function startStep(flowId, node, patch = {}) {
+      const flow0 = latest(flowId);
+      const state = { ...(flow0.stateJson ?? {}), ...patch };
+      const flow = flowOf(state);
+      if (!flow.agents[node]) throw new Error(`${node} is not an agent of this flow`);
+      const attempt = (state.attempts?.[node] ?? 0) + 1;
 
-      const override = projectSoul(state.cwd, step);
-      // Der Agent dieses Projekts für diesen Schritt — mit Modell, Effort und Tools aus .agentops/agents.json
-      const { ids, resolved } = await ensureProjectAgents(state.repo, state.cwd);
-      const agentId = ids[step];
-      const { model, thinking, tools } = resolved[step];
+      const override = projectSoul(state.cwd, node);
+      // Der Agent dieses Projekts für diesen Knoten — mit Modell, Effort und Tools aus flow.json
+      const { ids, resolved } = await ensureProjectAgents(state.repo, state.cwd, flow);
+      const agentId = ids[node];
+      const { model, thinking, tools } = resolved[node];
       const sessionKey = runSessionKey(agentId, flowId, attempt);
       const run = await api.runtime.subagent.run({
         sessionKey,
-        message: buildMessage(state, step, attempt),
+        message: buildMessage(state, node, attempt),
         ...(override ? { extraSystemPrompt: override } : {}),
         promptMode: "minimal",
         lightContext: true,
         deliver: false,
         cwd: state.cwd,
         lane: `pipeline:${flowId}`,
-        idempotencyKey: `${flowId}:${step}:${attempt}`,
+        idempotencyKey: `${flowId}:${node}:${attempt}`,
       });
 
       // Kein flows.runTask(): OpenClaw verknüpft Kind-Tasks nur, wenn der Lauf demselben Owner gehört wie der
-      // Flow. Die Schritte laufen aber als eigene Agenten (agent:pipeline-<step>), der Flow gehört main —
-      // "Task backing ownership could not be verified". Die Verknüpfung Lauf ↔ Flow steht deshalb im Flow
-      // selbst (stateJson.runs[step] = runId); der Connector liest sie von dort.
+      // Flow. Die Schritte laufen aber als eigene Agenten, der Flow gehört main — "Task backing ownership could
+      // not be verified". Die Verknüpfung Lauf ↔ Flow steht deshalb im Flow selbst (stateJson.runs[knoten] = runId).
       const revision = latest(flowId).revision;
       const nextState = {
         ...state,
-        runs: { ...(state.runs ?? {}), [step]: run.runId },
-        attempts: { ...(state.attempts ?? {}), [step]: attempt },
-        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: agentId, soulOverride: Boolean(override), model, thinking, tools, startedAt: Date.now() }],
+        runs: { ...(state.runs ?? {}), [node]: run.runId },
+        attempts: { ...(state.attempts ?? {}), [node]: attempt },
+        steps: [...(state.steps ?? []), { step: node, attempt, runId: run.runId, sessionKey, agent: agentId, soulOverride: Boolean(override), model, thinking, tools, startedAt: Date.now() }],
       };
-      const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: step, stateJson: nextState });
-      if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${step} not recorded (${result.reason ?? "unknown"})`);
-      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${step} (agent ${agentId}, run ${run.runId}${model ? `, model ${model}` : ""}${thinking ? `, thinking ${thinking}` : ""}${tools ? `, tools ${tools.join("/")}` : ""})`);
+      const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: node, stateJson: nextState });
+      if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${node} not recorded (${result.reason ?? "unknown"})`);
+      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${node} (agent ${agentId}, run ${run.runId}${model ? `, model ${model}` : ""}${thinking ? `, thinking ${thinking}` : ""}${tools ? `, tools ${tools.join("/")}` : ""})`);
       return run;
     }
 
-    async function onStepEnded(flowId, step, event) {
-      const flow = latest(flowId);
-      const state = flow.stateJson ?? {};
-      if (event.outcome !== "ok") {
-        flows.fail({
-          flowId,
-          expectedRevision: flow.revision,
-          blockedSummary: `${step} failed (${event.outcome ?? "unknown"})`,
-          stateJson: { ...state, steps: closeStep(state, step, event), failedStep: step, failedAt: Date.now() },
-        });
-        log.warn?.(`[pipeline] ${flowId.slice(0, 8)} failed at ${step}`);
-        return;
-      }
-      // Urteile der Schritte lesen — deterministisch, aus den Übergabedateien, nicht aus dem Modell.
-      let verdict = null;
-      if (step === "test") {
-        const line = lastLine(state.cwd, "test.md");
-        verdict = line.includes("TESTS FAIL") ? "fail" : line.includes("TESTS PASS") ? "pass" : null;
-        if (verdict === "fail") {
-          flows.fail({
-            flowId,
-            expectedRevision: flow.revision,
-            blockedSummary: "test: TESTS FAIL — siehe .agentops/test.md",
-            stateJson: { ...state, steps: closeStep(state, step, event, verdict), failedStep: step, failedAt: Date.now(), lastTest: "fail" },
-          });
-          log.warn?.(`[pipeline] ${flowId.slice(0, 8)} halted: tests fail`);
-          return;
-        }
-      }
-      if (step === "review") {
-        const line = lastLine(state.cwd, "review.md");
-        verdict = line.includes("REQUEST_CHANGES") ? "request_changes" : line.includes("APPROVE") ? "approve" : null;
-      }
-      const steps = closeStep(state, step, event, verdict);
-
-      if (step === "review") {
-        const rounds = (state.reviewRounds ?? 0) + 1;
-        if (verdict === "request_changes" && rounds <= MAX_REVIEW_ROUNDS) {
-          // Zurück nach code: der Code-Agent liest review.md, dann test und review erneut.
-          log.info?.(`[pipeline] ${flowId.slice(0, 8)} review requested changes (round ${rounds}/${MAX_REVIEW_ROUNDS}) → code`);
-          await startStep(flowId, "code", { steps, reviewRounds: rounds, lastReview: "request_changes" });
-          return;
-        }
-        flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: step, stateJson: { ...state, steps, reviewRounds: rounds, lastReview: verdict === "request_changes" ? "request_changes_unresolved" : "approve" } });
-      }
-
-      const current = latest(flowId);
-      const next = STEPS[STEPS.indexOf(step) + 1];
-      if (!next) {
-        flows.finish({ flowId, expectedRevision: current.revision, stateJson: { ...current.stateJson, steps, finishedAt: Date.now() } });
+    // Einen Zielknoten betreten: Agent starten, am Gate warten, beenden oder scheitern
+    async function enter(flowId, target, patch, note) {
+      const flow0 = latest(flowId);
+      const state = { ...(flow0.stateJson ?? {}), ...patch };
+      const flow = flowOf(state);
+      if (target === "done") {
+        flows.finish({ flowId, expectedRevision: flow0.revision, stateJson: { ...state, finishedAt: Date.now() } });
         log.info?.(`[pipeline] ${flowId.slice(0, 8)} finished`);
         return;
       }
-      if (next === GATE_BEFORE) {
-        flows.setWaiting({
-          flowId,
-          expectedRevision: current.revision,
-          currentStep: "gate",
-          waitJson: { kind: "gate", step: next, requestedAt: Date.now(), review: current.stateJson?.lastReview ?? null },
-          stateJson: { ...current.stateJson, steps, gate: { status: "pending", step: next, requestedAt: Date.now() } },
-        });
-        log.info?.(`[pipeline] ${flowId.slice(0, 8)} waiting at gate before ${next}`);
+      if (target === "halt") {
+        flows.fail({ flowId, expectedRevision: flow0.revision, blockedSummary: note ?? "halt", stateJson: { ...state, failedStep: state.steps?.at?.(-1)?.step ?? null, failedAt: Date.now() } });
+        log.warn?.(`[pipeline] ${flowId.slice(0, 8)} halted: ${note ?? "halt"}`);
         return;
       }
-      await startStep(flowId, next, { steps });
+      if (flow.gates.includes(target)) {
+        const after = flow.edges.find((e) => e.from === target && !e.on)?.to ?? "done";
+        flows.setWaiting({
+          flowId,
+          expectedRevision: flow0.revision,
+          currentStep: target,
+          waitJson: { kind: "gate", gate: target, step: after, requestedAt: Date.now(), review: state.lastUnresolved ? "request_changes_unresolved" : (state.lastVerdict ?? null), unresolved: state.lastUnresolved ?? null },
+          stateJson: { ...state, gate: { status: "pending", gate: target, step: after, requestedAt: Date.now() } },
+        });
+        log.info?.(`[pipeline] ${flowId.slice(0, 8)} waiting at ${target} before ${after}`);
+        return;
+      }
+      await startStep(flowId, target, patch);
+    }
+
+    async function onStepEnded(flowId, node, event) {
+      const flow0 = latest(flowId);
+      const state = flow0.stateJson ?? {};
+      const flow = flowOf(state);
+      if (event.outcome !== "ok") {
+        flows.fail({
+          flowId,
+          expectedRevision: flow0.revision,
+          blockedSummary: `${node} failed (${event.outcome ?? "unknown"})`,
+          stateJson: { ...state, steps: closeStep(state, node, event), failedStep: node, failedAt: Date.now() },
+        });
+        log.warn?.(`[pipeline] ${flowId.slice(0, 8)} failed at ${node}`);
+        return;
+      }
+      // Das Urteil des Schritts — deterministisch, aus der letzten Zeile der Übergabedatei, nicht aus dem Modell
+      const line = lastLine(state.cwd, `${node}.md`);
+      const { edge, exhausted } = nextEdge(flow, state, node, line);
+      const verdict = edge.on ? edge.on.toLowerCase().replace(/\s+/g, "_") : exhausted ? exhausted.on.toLowerCase().replace(/\s+/g, "_") : /\bPASS\b/.test(line) ? "pass" : /\bAPPROVE\b/.test(line) ? "approve" : null;
+      const key = `${edge.from}>${edge.to}`;
+      const patch = {
+        steps: closeStep(state, node, event, verdict),
+        edgeCounts: { ...(state.edgeCounts ?? {}), [key]: (state.edgeCounts?.[key] ?? 0) + 1 },
+        loops: (state.loops ?? 0) + (edge.on && flow.agents[edge.to] ? 1 : 0),
+        lastVerdict: verdict,
+        lastUnresolved: exhausted ? `${node}: ${exhausted.on} (${exhausted.max}× erreicht)` : null,
+      };
+      if (edge.on) log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${node}: ${edge.on} → ${edge.to}${edge.max ? ` (${patch.edgeCounts[key]}/${edge.max})` : ""}`);
+      else if (exhausted) log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${node}: ${exhausted.on} again, limit ${exhausted.max} reached → ${edge.to}`);
+      await enter(flowId, edge.to, patch, edge.to === "halt" ? `${node}: ${line.slice(0, 80)} — siehe .agentops/${node}.md` : null);
     }
 
     async function decideGate(flowId, decision, by) {
-      const flow = latest(flowId);
-      if (flow.status !== "waiting" || flow.waitJson?.kind !== "gate") throw new Error("flow is not waiting at a gate");
+      const flow0 = latest(flowId);
+      if (flow0.status !== "waiting" || flow0.waitJson?.kind !== "gate") throw new Error("flow is not waiting at a gate");
       if (decision !== "allow" && decision !== "deny") throw new Error("decision must be allow or deny");
-      const step = flow.waitJson.step;
-      const gate = { ...(flow.stateJson?.gate ?? {}), status: decision === "allow" ? "allowed" : "denied", decision, by, decidedAt: Date.now() };
-      const state = { ...(flow.stateJson ?? {}), gate };
+      const after = flow0.waitJson.step ?? "done";
+      const gate = { ...(flow0.stateJson?.gate ?? {}), status: decision === "allow" ? "allowed" : "denied", decision, by, decidedAt: Date.now() };
+      const state = { ...(flow0.stateJson ?? {}), gate, lastUnresolved: null };
       if (decision === "allow") {
-        flows.resume({ flowId, expectedRevision: flow.revision, status: "running", currentStep: step, stateJson: state });
-        await startStep(flowId, step);
+        flows.resume({ flowId, expectedRevision: flow0.revision, status: "running", currentStep: after === "done" ? flow0.currentStep : after, stateJson: state });
+        await enter(flowId, after, {}, null);
       } else {
-        flows.fail({ flowId, expectedRevision: flow.revision, blockedSummary: `gate denied by ${by}`, stateJson: state });
+        flows.fail({ flowId, expectedRevision: flow0.revision, blockedSummary: `gate denied by ${by}`, stateJson: state });
       }
     }
 
@@ -461,6 +567,12 @@ export default definePluginEntry({
       }
     });
 
+    const repoDir = (repo) => {
+      if (!repo || repo.includes("..") || repo.includes("/")) return null;
+      const cwd = path.join(reposRoot, repo);
+      return existsSync(cwd) ? cwd : null;
+    };
+
     api.registerHttpRoute({
       path: ROUTE,
       auth: "gateway",
@@ -472,7 +584,7 @@ export default definePluginEntry({
 
           if (req.method === "GET" && rest.length === 0) return json(res, 200, { flows: mine().map(view) });
 
-          // Agenten und ihre Modelle — main (der Master) und die Schritt-Agenten
+          // Vorlagen-Agenten und ihre Modelle — main (der Master) und die Schritt-Agenten
           if (req.method === "GET" && rest[0] === "agents" && rest.length === 1) {
             const [agents, models] = await Promise.all([listAgents(), listModels().catch((e) => { log.warn?.(`[pipeline] models list: ${e.message}`); return []; })]);
             // Ohne eigenen Eintrag gilt OpenClaws Laufzeit-Standard — der Katalog markiert ihn mit dem Tag "default".
@@ -491,42 +603,57 @@ export default definePluginEntry({
           if (req.method === "GET" && rest[0] === "tools" && rest.length === 1) {
             return json(res, 200, { groups: await listTools() });
           }
+
+          // Der Flow eines Projekts, wie das Plugin ihn liest: flow.json (mit agents.json-Altbestand) oder Standard, geprüft
+          if (req.method === "GET" && rest[0] === "projects" && rest.length === 3 && rest[2] === "flow") {
+            const cwd = repoDir(rest[1]);
+            if (!cwd) return json(res, 404, { error: `repo not found: ${rest[1]}` });
+            const { flow, source, error } = loadFlow(cwd);
+            return json(res, 200, { flow, path: flowPath(flow), source, error, templates: TEMPLATE_STEPS });
+          }
+          // Eine Definition prüfen, ohne sie zu speichern — das Cockpit fragt vor dem Commit
+          if (req.method === "POST" && rest[0] === "flow" && rest.length === 2 && rest[1] === "validate") {
+            const body = await readJson(req);
+            const flow = normalizeFlow(body);
+            return json(res, 200, { flow, path: flowPath(flow), error: validateFlow(flow) });
+          }
           // Die Agenten eines Projekts anlegen/abgleichen, ohne einen Lauf — z.B. nach einer Änderung im Cockpit
           if (req.method === "POST" && rest[0] === "projects" && rest.length === 3 && rest[2] === "sync") {
-            const repo = rest[1];
-            if (!repo || repo.includes("..") || repo.includes("/")) return json(res, 400, { error: "repo: name of a directory under reposRoot" });
-            const cwd = path.join(reposRoot, repo);
-            if (!existsSync(cwd)) return json(res, 404, { error: `repo not found: ${cwd}` });
-            const { ids, resolved } = await ensureProjectAgents(repo, cwd);
-            return json(res, 200, { agents: STEPS.map((s) => ({ step: s, id: ids[s], ...resolved[s], workspace: undefined, templateWorkspace: undefined })) });
+            const cwd = repoDir(rest[1]);
+            if (!cwd) return json(res, 404, { error: `repo not found: ${rest[1]}` });
+            const { flow, error } = loadFlow(cwd);
+            if (error) return json(res, 400, { error });
+            const { ids, resolved } = await ensureProjectAgents(rest[1], cwd, flow);
+            return json(res, 200, { agents: Object.keys(flow.agents).map((n) => ({ step: n, id: ids[n], model: resolved[n].model, thinking: resolved[n].thinking, tools: resolved[n].tools })) });
           }
 
           if (req.method === "POST" && rest[0] === "start" && rest.length === 1) {
             const body = await readJson(req);
             const repo = String(body.repo ?? "").trim();
             const goal = String(body.goal ?? "").trim();
-            if (!repo || repo.includes("..") || repo.includes("/")) return json(res, 400, { error: "repo: name of a directory under reposRoot" });
+            const cwd = repoDir(repo);
+            if (!cwd) return json(res, 404, { error: `repo not found: ${repo}` });
             if (!goal) return json(res, 400, { error: "goal required" });
-            const cwd = path.join(reposRoot, repo);
-            if (!existsSync(cwd)) return json(res, 404, { error: `repo not found: ${cwd}` });
+            const { flow, error } = loadFlow(cwd);
+            if (error) return json(res, 400, { error: `flow.json: ${error}` });
             const created = flows.createManaged({
               controllerId: CONTROLLER_ID,
               goal,
               status: "running",
-              currentStep: "plan",
+              currentStep: flow.start,
               notifyPolicy: "silent",
-              stateJson: { repo, cwd, goal, runs: {}, attempts: {}, steps: [], startedAt: Date.now() },
+              stateJson: { repo, cwd, goal, runs: {}, attempts: {}, steps: [], edgeCounts: {}, loops: 0, flow, path: flowPath(flow), startedAt: Date.now() },
             });
-            const flow = created?.flow ?? created;
-            if (!flow?.flowId) return json(res, 500, { error: "createManaged returned no flow", detail: created });
+            const created0 = created?.flow ?? created;
+            if (!created0?.flowId) return json(res, 500, { error: "createManaged returned no flow", detail: created });
             try {
-              await detached(() => startStep(flow.flowId, "plan"));
+              await detached(() => startStep(created0.flowId, flow.start));
             } catch (error) {
               // Der Flow existiert schon — nicht als Leiche stehen lassen
-              flows.fail({ flowId: flow.flowId, expectedRevision: latest(flow.flowId).revision, blockedSummary: `plan could not start: ${error?.message ?? error}`, stateJson: { ...(latest(flow.flowId).stateJson ?? {}), failedStep: "plan", failedAt: Date.now() } });
+              flows.fail({ flowId: created0.flowId, expectedRevision: latest(created0.flowId).revision, blockedSummary: `${flow.start} could not start: ${error?.message ?? error}`, stateJson: { ...(latest(created0.flowId).stateJson ?? {}), failedStep: flow.start, failedAt: Date.now() } });
               throw error;
             }
-            return json(res, 201, view(latest(flow.flowId)));
+            return json(res, 201, view(latest(created0.flowId)));
           }
 
           // Operator-Eingriff: Flow abbrechen (ein laufender Schritt läuft aus, sein Ergebnis wird ignoriert)
