@@ -1,0 +1,15 @@
+{
+  "id": "agentops-pipeline",
+  "name": "Agent-Ops Pipeline",
+  "description": "Führt plan → code → test → review → Gate → ship als managed TaskFlow. Reihenfolge im Code, das Modell nur in den Schritten.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ownerSessionKey": { "type": "string", "description": "Session, der die Flows gehören (Default agent:main:main)" },
+      "reposRoot": { "type": "string", "description": "Verzeichnis mit den Repos im Container (Default /home/node/repos)" },
+      "agentPrefix": { "type": "string", "description": "Präfix der Schritt-Agenten in agents.entries (Default pipeline-)" }
+    }
+  }
+}
