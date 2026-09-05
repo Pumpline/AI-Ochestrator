@@ -117,13 +117,13 @@ export function mountProjectMap(container) {
     }
   }
 
-  // Bedienung: ziehen dreht, Rad zoomt; ohne Eingabe dreht die Welt langsam weiter
+  // Bedienung: ziehen dreht (begrenzt, damit die Kette lesbar bleibt), Rad zoomt; ohne Eingabe pendelt die Welt leicht
   let dragging = false, lastX = 0, lastY = 0, rotY = 0, rotX = 0.22, zoom = 12.5, idle = 0;
   const el = renderer.domElement;
   el.style.cursor = "grab";
-  el.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; el.setPointerCapture(e.pointerId); el.style.cursor = "grabbing"; });
+  el.addEventListener("pointerdown", (e) => { dragging = true; idle = 0; lastX = e.clientX; lastY = e.clientY; el.setPointerCapture(e.pointerId); el.style.cursor = "grabbing"; });
   el.addEventListener("pointerup", (e) => { dragging = false; el.releasePointerCapture(e.pointerId); el.style.cursor = "grab"; idle = 0; });
-  el.addEventListener("pointermove", (e) => { if (!dragging) return; rotY += (e.clientX - lastX) * 0.006; rotX = Math.max(-0.2, Math.min(1.1, rotX + (e.clientY - lastY) * 0.004)); lastX = e.clientX; lastY = e.clientY; });
+  el.addEventListener("pointermove", (e) => { if (!dragging) return; rotY = Math.max(-1.1, Math.min(1.1, rotY + (e.clientX - lastX) * 0.006)); rotX = Math.max(-0.2, Math.min(1.1, rotX + (e.clientY - lastY) * 0.004)); lastX = e.clientX; lastY = e.clientY; });
   el.addEventListener("wheel", (e) => { e.preventDefault(); zoom = Math.max(6, Math.min(24, zoom + e.deltaY * 0.01)); }, { passive: false });
 
   function resize() { const w = container.clientWidth || 600, h = container.clientHeight || 380; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
@@ -133,8 +133,9 @@ export function mountProjectMap(container) {
   function frame() {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(clock.getDelta(), 0.05);
-    if (!dragging && !REDUCED) { idle += dt; if (idle > 2) rotY += dt * 0.08; }
-    world.rotation.y = rotY;
+    if (!dragging) idle += dt;
+    const sway = REDUCED ? 0 : Math.min(1, Math.max(0, idle - 2)) * Math.sin(clock.elapsedTime * 0.25) * 0.28;
+    world.rotation.y = rotY + sway;
     camera.position.set(0, Math.sin(rotX) * zoom, Math.cos(rotX) * zoom); camera.lookAt(0, -0.6, 0);
     for (const p of pulses) {
       if (!REDUCED) p.t = (p.t + dt * (p.speed ?? 0.4)) % 1;

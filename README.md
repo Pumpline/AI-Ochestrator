@@ -205,8 +205,18 @@ Der Plugin-Parameter `agentPrefix` (Default `pipeline-`) wählt den Agenten-Satz
 Weil jeder Schritt-Agent seinen Lauf selbst besitzt, der Flow aber `main` gehört, greift OpenClaws eigene
 Kind-Task-Verknüpfung (`runTask`) nicht — „Task backing ownership could not be verified" ist strukturell, kein
 Timing. Die Zuordnung Lauf ↔ Flow steht deshalb im Flow (`stateJson.runs[step] = runId`), und der Connector
-nutzt sie auch für den Join von OpenClaws Exec-Approvals auf den Flow. Review-Ergebnis `REQUEST_CHANGES`
-verzweigt in v0.1 noch nicht.
+nutzt sie auch für den Join von OpenClaws Exec-Approvals auf den Flow.
+
+**Urteile und der Rückweg.** Die Schritte urteilen in der letzten nicht-leeren Zeile ihrer Übergabedatei — `test.md`
+endet mit `TESTS PASS` oder `TESTS FAIL`, `review.md` mit `APPROVE` oder `REQUEST_CHANGES`. Das Plugin liest genau
+diese Zeile, kein Modell interpretiert sie. `TESTS FAIL` lässt den Flow scheitern (Status failed, Grund im
+`blockedSummary`). `REQUEST_CHANGES` verzweigt zurück: review → code → test → review, höchstens `MAX_REVIEW_ROUNDS`
+(2) Runden; jeder Versuch eines Schritts bekommt eine frische Subagent-Session (`…-2`), zählt in
+`stateJson.attempts[step]`, und die code-Soul weiß, dass sie bei `REQUEST_CHANGES` in `review.md` zuerst die
+blockierenden Punkte behebt. Bleibt die Review nach der letzten Runde bei `REQUEST_CHANGES`, geht der Flow trotzdem
+ans Gate — mit `waitJson.review = request_changes_unresolved`, und das Cockpit sagt es dazu: dann entscheidet der
+Mensch. Verifiziert 2026-09-05 mit einer Projekt-Soul, die in Runde 1 Änderungen verlangt: plan → code → test →
+review (REQUEST_CHANGES) → code (Versuch 2) → test → review (APPROVE) → Gate → ship, Flow `ea4fa8de`.
 
 **Lauf #2** (divide() mit Fehlerfall, 4/4 Tests grün, Commit `9e0c592`): Kosten je Soul, aus Prometheus
 `openclaw_cost_usd_total{openclaw_agent}` — die Frage „was hat Agent X gekostet?" ist damit pro Schritt beantwortbar:
@@ -250,7 +260,7 @@ Solange nichts konfiguriert ist, bietet die Login-Seite den `API_TOKEN` an. Sess
 | Flows | alle Flows aus dem Read-Model mit **Stufenstreifen** (plan · code · test · review · gate · ship), Ziel und Repo aus dem Plugin, alle 10 s aktualisiert |
 | Flow | großer Streifen, Zeitleiste aus `/api/flows/{id}/events`; am Gate: **Freigeben** / **Ablehnen**; bei hängendem Schritt: „Schritt als beendet behandeln" |
 | Wartet auf dich | offene Gates, Zähler in der Leiste |
-| Projekt | **Pipeline starten** (Ziel eingeben), letzte Läufe, **Souls je Schritt** — Standard des Agenten oder Projekt-Override, „Soul speichern" committet `.agentops/souls/<schritt>.md` ins Repo |
+| Projekt | **Karte** — die Souls des Projekts als Knoten in einer 3D-Welt (three.js r128 von cdnjs, sonst kein Framework), Kanten = Pipeline, gestrichelte Rückkante review → code; laufende Flows als Lichtimpuls auf der Kante zum aktuellen Schritt (Indigo), erledigte Schritte grün, offenes Gate kreist amber, gestoppter Schritt rot; ziehen dreht, Rad zoomt, alle 5 s frisch. Darunter **Pipeline starten** (Ziel eingeben), letzte Läufe, **Souls je Schritt** — Standard des Agenten oder Projekt-Override, „Soul speichern" committet `.agentops/souls/<schritt>.md` ins Repo |
 | Kosten | Kosten je Soul (7 Tage / seit Gateway-Start), Tokens nach Art — aus Prometheus |
 
 Die Schreibseite des Cockpits sind genau drei Verben, alle in `Cockpit.cs`: Gate entscheiden und Pipeline
