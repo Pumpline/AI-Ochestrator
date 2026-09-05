@@ -320,8 +320,10 @@ public static class Cockpit
         var path = FlowPath(repo);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, flow.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n", ct);
-        if (File.Exists(LegacyAgentsPath(repo))) File.Delete(LegacyAgentsPath(repo));
-        return await GitCommitAsync(repo, [".agentops/flow.json", ".agentops/agents.json"], message, ct);
+        var paths = new List<string> { ".agentops/flow.json" };
+        // git add scheitert an einem Pfad, den es nie gab — das alte agents.json nur mitnehmen, wenn es da war
+        if (File.Exists(LegacyAgentsPath(repo))) { File.Delete(LegacyAgentsPath(repo)); paths.Add(".agentops/agents.json"); }
+        return await GitCommitAsync(repo, [.. paths], message, ct);
     }
 
     private static bool TryRepo(string root, string name, out string repo)
