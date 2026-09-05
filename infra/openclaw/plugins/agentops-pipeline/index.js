@@ -409,8 +409,8 @@ export default definePluginEntry({
           }
           if (req.method === "PUT" && rest[0] === "agents" && rest.length === 2) {
             const body = await readJson(req);
-            if (body.model !== undefined) await setAgentModel(rest[1], String(body.model ?? "").trim());
-            if (body.thinking !== undefined) await setAgentThinking(rest[1], String(body.thinking ?? "").trim());
+            if (body.model != null) await setAgentModel(rest[1], String(body.model).trim());
+            if (body.thinking != null) await setAgentThinking(rest[1], String(body.thinking).trim());
             return json(res, 200, (await listAgents()).find((a) => a.id === rest[1]));
           }
 
