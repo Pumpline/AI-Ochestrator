@@ -211,7 +211,15 @@ async function pageFlow(id) {
   const keepMap = liveMap?.id === id ? $("#map") : null;
   if (!keepMap) disposeMap();
   const wasOpen = new Set([...page().querySelectorAll("details.step[open]")].map((d) => d.dataset.key));
-  const [flow, events, p, detail] = await Promise.all([api(`/flows/${encodeURIComponent(id)}`), api(`/flows/${encodeURIComponent(id)}/events`), api(`/pipeline/flows/${encodeURIComponent(id)}`).catch(() => null), api(`/flows/${encodeURIComponent(id)}/steps`).catch(() => null)]);
+  const [logged, events, p, detail] = await Promise.all([
+    api(`/flows/${encodeURIComponent(id)}`).catch((e) => { if (e.status === 404) return null; throw e; }),
+    api(`/flows/${encodeURIComponent(id)}/events`).catch(() => []),
+    api(`/pipeline/flows/${encodeURIComponent(id)}`).catch(() => null),
+    api(`/flows/${encodeURIComponent(id)}/steps`).catch(() => null),
+  ]);
+  // Frisch gestartet: der Connector holt den Flow erst beim nächsten Poll in den Log — bis dahin zeigt die Seite den Plugin-Stand
+  const flow = logged ?? (p ? { id, status: p.status, stage: p.currentStep, revision: p.revision, gateOpen: p.status === "waiting" && p.wait?.kind === "gate", updatedAt: p.updatedAt } : null);
+  if (!flow) throw new ApiError("Flow nicht gefunden", 404);
   const goal = p?.goal ?? `Flow ${short(id)}`; const state = p?.state ?? {};
   const steps = detail?.steps ?? []; const gate = detail?.gate ?? null;
   const sum = (k) => steps.reduce((a, s) => a + (k(s) ?? 0), 0);
