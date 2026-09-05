@@ -175,6 +175,14 @@ main.page{padding:18px 20px 60px}
 .events .type.done{color:var(--success-text)}
 .events .type.halt{color:var(--danger-text)}
 
+/* ---------- Projektkarte (3D) ---------- */
+.map{position:relative;height:400px;background:radial-gradient(ellipse at 50% 40%,#0c1222 0%,#05060b 70%);border-radius:0 0 var(--radius-lg) var(--radius-lg);overflow:hidden}
+.map canvas{display:block;width:100%!important;height:100%!important}
+.map__legend{position:absolute;left:14px;bottom:12px;display:flex;gap:14px;font-family:var(--f-mono);font-size:11px;color:var(--text-dim);pointer-events:none}
+.map__legend span{display:inline-flex;align-items:center;gap:6px}
+.map__legend i{width:8px;height:8px;border-radius:50%;display:inline-block}
+.map__hint{position:absolute;right:14px;bottom:12px;font-size:11px;color:var(--text-faint);pointer-events:none}
+
 /* ---------- Souls ---------- */
 .soul-tag{font-size:11px;color:var(--text-faint)}
 .soul-tag.override{color:var(--accent)}

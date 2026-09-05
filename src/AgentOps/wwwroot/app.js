@@ -1,6 +1,8 @@
 // Agent-Ops Cockpit — ein Modul, kein Framework, kein Build.
 // Anmeldung über Discord (Cookie-Session); der Bearer-Token bleibt als Fallback für Umgebungen ohne Discord.
 
+import { mountProjectMap } from "/map.js";
+
 const STEPS = ["plan", "code", "test", "review", "gate", "ship"];
 const SOUL_STEPS = ["plan", "code", "test", "review", "ship"];
 const HALTED = new Set(["failed", "blocked", "lost", "cancelled"]);
@@ -196,7 +198,7 @@ async function pageFlow(id) {
       <div class="detail-meta"><span>${esc(state.repo ?? "")}</span><span>${esc(id)}</span><span>Revision ${esc(flow.revision)}</span>${statusDot(flow.status)}</div>
     </div>
     ${strip(flow, true)}
-    ${flow.gateOpen ? `<div class="alert alert--warning">${icon("shield")}<div style="flex:1"><div style="color:var(--text);margin-bottom:8px">Review ist durch — die Pipeline wartet vor <span class="mono">ship</span>. Sieh dir <span class="mono">.agentops/review.md</span> an, dann entscheide.</div><div class="actions"><button class="btn btn--success btn--sm" id="btn-allow" type="button">${icon("check", "icon icon--sm")}Freigeben</button><button class="btn btn--danger btn--sm" id="btn-deny" type="button">${icon("x", "icon icon--sm")}Ablehnen</button><span class="dim" style="font-size:12px">als ${esc(me?.displayName ?? "API-Token")}</span></div></div></div>` : ""}
+    ${flow.gateOpen ? `<div class="alert alert--warning">${icon("shield")}<div style="flex:1"><div style="color:var(--text);margin-bottom:8px">${p?.wait?.review === "request_changes_unresolved" ? `Die Review verlangt nach ${esc(p?.state?.reviewRounds ?? 2)} Runden immer noch Änderungen — jetzt entscheidest du.` : `Review ist durch${(p?.state?.reviewRounds ?? 0) > 0 ? ` nach ${esc(p.state.reviewRounds + 1)} Runden` : ""} — die Pipeline wartet vor <span class="mono">ship</span>.`} Sieh dir <span class="mono">.agentops/review.md</span> an, dann entscheide.</div><div class="actions"><button class="btn btn--success btn--sm" id="btn-allow" type="button">${icon("check", "icon icon--sm")}Freigeben</button><button class="btn btn--danger btn--sm" id="btn-deny" type="button">${icon("x", "icon icon--sm")}Ablehnen</button><span class="dim" style="font-size:12px">als ${esc(me?.displayName ?? "API-Token")}</span></div></div></div>` : ""}
     ${HALTED.has(flow.status) ? `<div class="alert alert--danger">${icon("alert")}<span>Stehen geblieben${p?.blockedSummary ? `: ${esc(p.blockedSummary)}` : ""}.</span></div>` : ""}
     ${flow.status === "running" && p ? `<div class="actions"><button class="btn btn--secondary btn--sm" id="btn-advance" type="button">${icon("play", "icon icon--sm")}Schritt als beendet behandeln</button><span class="dim" style="font-size:12px">nur wenn ein Schritt hängt</span></div>` : ""}
     ${card("Zeitleiste", "clock", events.length ? `<div class="events">${events.map((e) => {
@@ -220,12 +222,18 @@ async function decide(id, decision) {
   catch (e) { toast(e.message, "error"); }
 }
 
+let liveMap = null;
+function disposeMap() { if (liveMap) { liveMap.dispose(); liveMap = null; } }
+
 async function pageProject(name) {
   setTitle("Projekt", name);
+  disposeMap();
   const [souls, byId] = await Promise.all([api(`/projects/${encodeURIComponent(name)}/souls`), pipelineIndex()]);
-  const runs = [...byId.values()].filter((f) => f.state?.repo === name).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 6);
+  const mine = () => [...byId.values()].filter((f) => f.state?.repo === name);
+  const runs = mine().sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 6);
   const active = SOUL_STEPS.includes(pageProject.tab) ? pageProject.tab : "plan";
   page().innerHTML = `
+    ${card("Karte", "activity", `<div class="map" id="map"><div class="map__legend"><span><i style="background:#4b57dd"></i>arbeitet</span><span><i style="background:#22c55e"></i>erledigt</span><span><i style="background:#f59e0b"></i>Gate offen</span><span><i style="background:#ef4444"></i>gestoppt</span></div><div class="map__hint">ziehen dreht · Rad zoomt</div></div>`, `<span class="dim" style="font-size:12px">${runs.filter((f) => f.status === "running").length} Flows arbeiten</span>`)}
     ${card("Pipeline starten", "play", `<div class="card__body"><form id="run-form" class="field"><label class="field__label" for="goal">Was soll die Pipeline in <span class="mono">${esc(name)}</span> tun?</label><textarea class="textarea" id="goal" required placeholder="Zum Beispiel: Add divide(a, b) with a test for division by zero"></textarea><div class="actions" style="margin-top:4px"><button class="btn btn--primary" type="submit">${icon("play", "icon icon--sm")}Pipeline starten</button><span class="dim" style="font-size:12px">plan → code → test → review → Gate → ship</span></div></form></div>`)}
     ${card("Letzte Läufe", "workflow", runs.length ? `<div class="card__body card__body--flush"><table class="table"><tbody>${runs.map((f) => `<tr class="link" data-href="#/flows/${esc(f.flowId)}"><td style="width:240px">${strip({ stage: f.currentStep, status: f.status, gateOpen: f.status === "waiting" && f.wait?.kind === "gate" })}</td><td class="strong cell-goal">${esc(f.goal)}</td><td>${statusDot(f.status)}</td><td class="num dim">${esc(timeAgo(f.updatedAt))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Noch kein Lauf in diesem Projekt.</div>`)}
     <section class="card">
@@ -252,6 +260,14 @@ async function pageProject(name) {
     });
   };
   renderSoul(active);
+  // 3D-Karte: Souls als Knoten, Flows als Impulse — alle 5 s frisch, ohne die Seite neu zu bauen
+  const mapEl = $("#map");
+  liveMap = mountProjectMap(mapEl);
+  liveMap.update(mine());
+  liveMap.timer = setInterval(async () => {
+    try { const idx = await pipelineIndex(); liveMap?.update([...idx.values()].filter((f) => f.state?.repo === name)); } catch {}
+  }, 5000);
+  const origDispose = liveMap.dispose; liveMap.dispose = () => { clearInterval(liveMap.timer); origDispose(); };
   page().querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => { page().querySelectorAll(".tab").forEach((t) => t.classList.toggle("is-active", t === b)); pageProject.tab = b.dataset.tab; renderSoul(b.dataset.tab); }));
   $("#run-form").addEventListener("submit", async (e) => {
     e.preventDefault(); const btn = $("#run-form button"); btn.disabled = true;
@@ -280,6 +296,7 @@ async function pageCosts() {
 let refresh = null;
 async function route() {
   clearInterval(refresh);
+  disposeMap();
   const raw = location.hash.replace(/^#\//, ""); const [path] = raw.split("?");
   const parts = path.split("/").filter(Boolean);
   const [p, arg] = [parts[0] ?? "", parts[1] ? decodeURIComponent(parts[1]) : undefined];
