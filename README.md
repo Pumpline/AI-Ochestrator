@@ -235,9 +235,12 @@ rechts unten. Nur dunkel.
 Cookie-Session 14 Tage gleitend. Anmelden legt kein Konto an — nur Discord-IDs aus `DISCORD_ALLOWED_IDS` und
 `DISCORD_ROOT_ID` bekommen eine Session, alle anderen dieselbe Abweisung. Der Discord-Anzeigename ist danach der
 Name in Freigaben (`ApprovalGranted.actor_ref`). Einrichten: im Discord Developer Portal eine Application anlegen,
-unter OAuth2 die Redirect URI `http://srv1:5080/api/auth/discord/callback` eintragen, Client-ID und -Secret in die
-`.env` auf srv1 (Secret ohne History: `read -rsp "Secret: " S; echo "DISCORD_CLIENT_SECRET=$S" >> .env; unset S`),
-eigene Discord-User-ID als `DISCORD_ROOT_ID`, dann `docker compose --profile app --profile openclaw up -d agentops`.
+unter OAuth2 die Redirect URI `http://<Tailscale-IP>:5080/api/auth/discord/callback` eintragen — **Discord akzeptiert
+keinen einzelnen Hostnamen** (`http://srv1:5080/…` gilt als „ungültiges URL-Format"), die Tailscale-IP oder der
+MagicDNS-Name gehen. Client-ID und -Secret in die `.env` auf srv1 (Secret ohne History:
+`read -rsp "Secret: " S; echo "DISCORD_CLIENT_SECRET=$S" >> .env; unset S`), eigene Discord-User-ID als
+`DISCORD_ROOT_ID`, dann `docker compose --profile app --profile openclaw up -d agentops`. Das Cockpit über
+**denselben Host öffnen, der in der Redirect URI steht** — der State-Cookie gilt pro Host. Verifiziert 2026-09-05.
 Solange nichts konfiguriert ist, bietet die Login-Seite den `API_TOKEN` an. Session-Schlüssel liegen in
 `AGENTOPS_DATA_DIR/keys`, sonst wären alle Anmeldungen nach jedem Neustart weg. Für Skripte gilt der Bearer-Token weiter.
 
