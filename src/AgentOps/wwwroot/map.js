@@ -1,14 +1,23 @@
-// Projektkarte in 3D: die Pipeline als Schiene durch den Raum — sechs Stationen auf einer Linie,
-// ein laufender Flow ein Lichtpunkt, der die Schiene entlangläuft; die Runde review → code ist eine
-// gestrichelte Rückführung unter der Schiene, das offene Gate pulsiert. Im Fokus steht über jedem
-// Abschnitt, wie lange der Schritt gebraucht hat und wie viele Tokens er gekostet hat.
+// Projektkarte in 3D: die Pipeline als Schiene durch den Raum — sechs Stationen, jede auf eigener
+// Höhe und Tiefe, verbunden durch Röhren; ein laufender Flow ein Lichtpunkt, der die Abschnitte
+// entlangläuft; die Runde review → code ist eine gestrichelte Rückführung unter und hinter allem,
+// das offene Gate pulsiert. Im Fokus steht über jedem Abschnitt, wie lange der Schritt gebraucht
+// hat und wie viele Tokens er gekostet hat.
 // Klick auf eine Station → onSelect(step). Ziehen dreht, Strg+Rad zoomt.
 // Braucht THREE (r128, global) aus index.html; Farben kommen aus den CSS-Variablen des Themas.
 
 const ORDER = ["plan", "code", "test", "review", "gate", "ship"];
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const X3 = (i) => -6.6 + i * 2.64;          // Stationen auf der X-Achse
-const ARC_DIP = -1.7;                        // Rückführung review → code, unter der Schiene
+// Stationen im Raum verteilt: von links nach rechts zu lesen, aber jede auf eigener Höhe und Tiefe —
+// unregelmäßig, kein Ring wie im alten Design. Um den Ursprung zentriert, damit das Drehen um die Mitte schwingt.
+const POS = {
+  plan:   new THREE.Vector3(-5.4,  0.4,  0.7),
+  code:   new THREE.Vector3(-3.2, -0.5, -0.9),
+  test:   new THREE.Vector3(-1.0,  0.7,  0.4),
+  review: new THREE.Vector3( 1.0, -0.2, -0.7),
+  gate:   new THREE.Vector3( 3.1,  0.9,  0.6),
+  ship:   new THREE.Vector3( 5.4, -0.3, -0.2),
+};
 
 export function fmtDuration(ms) {
   if (ms == null || !isFinite(ms)) return "";
@@ -48,27 +57,31 @@ export function mountProjectMap(container, { onSelect } = {}) {
 
   // Stationen: Kugeln, das Gate ein Rhombus — Farbe trägt den Zustand
   const nodes = {}, labels = {};
-  ORDER.forEach((name, i) => {
+  ORDER.forEach((name) => {
     const geo = name === "gate" ? new THREE.OctahedronGeometry(0.42) : new THREE.SphereGeometry(0.34, 24, 18);
     const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
-    mesh.position.set(X3(i), 0, 0); mesh.userData.step = name;
+    mesh.position.copy(POS[name]); mesh.userData.step = name;
     world.add(mesh); nodes[name] = mesh;
   });
 
-  // Schiene: Röhren zwischen den Nachbarn, dazu die gestrichelte Rückführung review → code
+  // Schiene: Röhren durch den Raum zwischen den Nachbarn, dazu die gestrichelte Rückführung review → code
+  const up = new THREE.Vector3(0, 1, 0);
+  const tube = (a, b) => {
+    const dir = b.clone().sub(a); const len = dir.length();
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    t.position.copy(a).addScaledVector(dir, 0.5);
+    t.quaternion.setFromUnitVectors(up, dir.normalize());
+    return t;
+  };
   const segs = [];
   for (let i = 0; i < ORDER.length - 1; i++) {
-    const a = new THREE.Vector3(X3(i), 0, 0), b = new THREE.Vector3(X3(i + 1), 0, 0);
-    const len = a.distanceTo(b);
-    const tube = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, len, 8), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-    tube.position.copy(a.clone().add(b).multiplyScalar(0.5));
-    tube.rotation.z = Math.atan2(b.y - a.y, b.x - a.x) - Math.PI / 2;
-    world.add(tube); segs.push(tube);
+    const t = tube(POS[ORDER[i]].clone(), POS[ORDER[i + 1]].clone());
+    world.add(t); segs.push(t);
   }
   const arcCurve = new THREE.QuadraticBezierCurve3(
-    new THREE.Vector3(X3(3), 0, 0),
-    new THREE.Vector3((X3(3) + X3(1)) / 2, ARC_DIP, 0),
-    new THREE.Vector3(X3(1), 0, 0),
+    POS.review.clone(),
+    POS.review.clone().add(POS.code).multiplyScalar(0.5).add(new THREE.Vector3(0, -1.9, -1.7)),
+    POS.code.clone(),
   );
   const arc = new THREE.Line(
     new THREE.BufferGeometry().setFromPoints(arcCurve.getPoints(48)),
@@ -104,9 +117,9 @@ export function mountProjectMap(container, { onSelect } = {}) {
       const str = [items.length > 1 ? `${items.length}×` : "", fmtDuration(ms), tok != null ? `${fmtTokens(tok)} tok` : ""].filter(Boolean).join(" · ");
       if (!str) continue;
       const l = sprite([[str, "600 30px 'JetBrains Mono', monospace", text]], 1);
-      if (key === "plan") l.position.set(X3(0), 0.85, 0);
+      if (key === "plan") l.position.copy(POS.plan).add(new THREE.Vector3(0, 0.85, 0));
       else if (key === "review>code") l.position.copy(arcCurve.getPoint(0.5)).add(new THREE.Vector3(0, -0.55, 0));
-      else { const [a, b] = key.split(">"); l.position.set((X3(ORDER.indexOf(a)) + X3(ORDER.indexOf(b))) / 2, 0.85, 0); }
+      else { const [a, b] = key.split(">"); l.position.copy(POS[a].clone().add(POS[b]).multiplyScalar(0.5)).add(new THREE.Vector3(0, 0.85, 0)); }
       world.add(l); edgeLabels.push(l);
     }
   }
@@ -151,7 +164,7 @@ export function mountProjectMap(container, { onSelect } = {}) {
       nodes[s].material.color.copy(state[s] === "active" ? accent : state[s] === "done" ? done : state[s] === "gate" ? gate : state[s] === "failed" ? failed : idle);
       world.remove(labels[s]);
       labels[s] = sprite([[s.toUpperCase(), "600 34px 'Space Grotesk', sans-serif", state[s] === "idle" ? dim : muted], ...(n[s] ? [[`${n[s]} ${n[s] === 1 ? "Flow" : "Flows"}`, "26px 'JetBrains Mono', monospace", dim]] : [])]);
-      labels[s].position.set(nodes[s].position.x, -0.95, 0); world.add(labels[s]);
+      labels[s].position.copy(nodes[s].position).add(new THREE.Vector3(0, -0.95, 0)); world.add(labels[s]);
     }
     for (let i = 0; i < segs.length; i++) {
       const b = ORDER[i + 1];
@@ -163,7 +176,7 @@ export function mountProjectMap(container, { onSelect } = {}) {
   }
 
   // Bedienung: ziehen dreht, Strg+Rad zoomt, Klick auf eine Station wählt sie
-  let dragging = false, moved = 0, lastX = 0, lastY = 0, rotY = 0, rotX = 0.38, zoom = 11;
+  let dragging = false, moved = 0, lastX = 0, lastY = 0, rotY = 0, rotX = 0.5, zoom = 12.5;
   const el = renderer.domElement;
   const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2();
   function pick(e) {
@@ -195,11 +208,10 @@ export function mountProjectMap(container, { onSelect } = {}) {
     const dt = Math.min((now - last) / 1000, 0.05); last = now;
     world.rotation.y = rotY;
     camera.position.set(0, Math.sin(rotX) * zoom, Math.cos(rotX) * zoom); camera.lookAt(0, -0.1, 0);
-    for (const s of ORDER) nodes[s].rotation.y += 0;   // Stationen stehen still — nur die Punkte laufen
     if (!REDUCED) for (const p of pulses) {
       p.t = (p.t + dt * p.speed) % 1;
       if (p.from == null) p.mesh.position.copy(arcCurve.getPoint(1 - p.t));
-      else p.mesh.position.set(X3(p.from) + (X3(p.to) - X3(p.from)) * p.t, 0, 0);
+      else p.mesh.position.copy(POS[ORDER[p.from]]).lerp(POS[ORDER[p.to]], p.t);
     }
     if (gateRing && !REDUCED) {
       const t = (now / 1200) % 1;
