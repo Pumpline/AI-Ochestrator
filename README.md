@@ -159,6 +159,8 @@ curl -s -H "$H" $U                                    # alle Pipeline-Flows
 curl -s -H "$H" $U/<flowId>                           # einer
 curl -s -H "$H" -d '{"decision":"allow","by":"leo"}' $U/<flowId>/gate      # Gate vor ship: allow | deny
 curl -s -H "$H" -d '{"by":"leo"}' $U/<flowId>/advance                      # Operator-Eingriff: Schritt als beendet behandeln
+curl -s -H "$H" $U/agents                                  # Agenten (main + Schritte) mit Modell, dazu der Modellkatalog
+curl -s -H "$H" -X PUT -d '{"model":"anthropic/claude-opus-5"}' $U/agents/pipeline-review   # Modell je Agent — Hot-Reload, gilt ab dem nächsten Lauf
 ```
 
 Das Gate ist ein `waiting`-Zustand mit `waitJson.kind = "gate"`; die Entscheidung landet in `stateJson.gate`. Der Connector
@@ -218,6 +220,19 @@ ans Gate — mit `waitJson.review = request_changes_unresolved`, und das Cockpit
 Mensch. Verifiziert 2026-09-05 mit einer Projekt-Soul, die in Runde 1 Änderungen verlangt: plan → code → test →
 review (REQUEST_CHANGES) → code (Versuch 2) → test → review (APPROVE) → Gate → ship, Flow `ea4fa8de`.
 
+**Lebenslauf je Schritt.** `stateJson.steps` ist die Liste aller Versuche eines Flows mit Anfang, Ende, Ausgang und Urteil;
+dazu kennt OpenClaw je Lauf die Aufgabe (die Frage an den Agenten), seine Abschlussnachricht (die Antwort) und die
+Dauer (`subagent_runs.payload_json`), und das Transkript des Agenten (`agents/<id>/agent/openclaw-agent.sqlite`,
+`transcript_events`) trägt an jeder Assistant-Nachricht `usage` samt Kosten und die Run-ID. Das Cockpit liest alle drei
+nur und zeigt je Schritt Frage, Antwort, Dauer, Tokens und Kosten (`GET /api/flows/{id}/steps`).
+
+**Modell je Agent.** `GET /agents` liest `agents.entries.*.model` (main = Master, sonst Laufzeit-Standard mit Tag
+`default` im Katalog), `PUT /agents/<id>` schreibt es über OpenClaws CLI (`config set`, validiert, Hot-Reload ohne
+Neustart). Für OpenAI-Modelle wird zusätzlich `agents.defaults.models["<modell>"].agentRuntime.id = openclaw` gesetzt —
+der Codex-Harness fehlt im Image, und OpenClaw kennt den Pin nur je Modell, nicht je Agent. Der Katalog (`models list --json`)
+enthält nur Anbieter mit Schlüssel im Container: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`
+in der `.env`, dann `docker compose --profile openclaw up -d openclaw`.
+
 **Lauf #2** (divide() mit Fehlerfall, 4/4 Tests grün, Commit `9e0c592`): Kosten je Soul, aus Prometheus
 `openclaw_cost_usd_total{openclaw_agent}` — die Frage „was hat Agent X gekostet?" ist damit pro Schritt beantwortbar:
 
@@ -258,9 +273,10 @@ Solange nichts konfiguriert ist, bietet die Login-Seite den `API_TOKEN` an. Sess
 |---|---|
 | Dashboard | vier Kennzahlen (Flows, offene Freigaben, stehen geblieben, Kosten 7 Tage), letzte Flows, offene Freigaben |
 | Flows | alle Flows aus dem Read-Model mit **Stufenstreifen** (plan · code · test · review · gate · ship), Ziel und Repo aus dem Plugin, alle 10 s aktualisiert |
-| Flow | großer Streifen, Zeitleiste aus `/api/flows/{id}/events`; am Gate: **Freigeben** / **Ablehnen**; bei hängendem Schritt: „Schritt als beendet behandeln" |
+| Flow | großer Streifen, **Karte dieses Laufs** (Dauer und Tokens auf jedem Bogen), **Schritte** — je Versuch Modell, Dauer, Tokens, Kosten, aufklappbar Frage und Antwort des Agenten —, Zeitleiste aus `/api/flows/{id}/events`; am Gate: **Freigeben** / **Ablehnen**; bei hängendem Schritt: „Schritt als beendet behandeln" |
 | Wartet auf dich | offene Gates, Zähler in der Leiste |
-| Projekt | **Karte** — die Souls des Projekts als Ring um das Repo in einer 3D-Welt (three.js r128 von cdnjs, sonst kein Framework), Bögen zwischen den Nachbarn = Pipeline, gestrichelte Brücke review → code über die Mitte; laufende Flows als Lichtimpuls auf dem Bogen zum aktuellen Schritt (Indigo) plus Speiche vom arbeitenden Schritt zum Repo, erledigte Schritte grün, offenes Gate kreist amber, gestoppter Schritt rot; ziehen dreht, Rad zoomt, alle 5 s frisch. Darunter **Pipeline starten** (Ziel eingeben), letzte Läufe, **Souls je Schritt** — Standard des Agenten oder Projekt-Override, „Soul speichern" committet `.agentops/souls/<schritt>.md` ins Repo |
+| Projekt | **Karte** — die Souls des Projekts als Ring um das Repo in einer 3D-Welt (three.js r128 von cdnjs, sonst kein Framework), Bögen zwischen den Nachbarn = Pipeline, gestrichelte Brücke review → code über die Mitte; laufende Flows als Lichtimpuls auf dem Bogen zum aktuellen Schritt (Indigo) plus Speiche vom arbeitenden Schritt zum Repo, erledigte Schritte grün, offenes Gate kreist amber, gestoppter Schritt rot; flach gezeichnet, als Spirale im Raum, Klick auf eine Soul öffnet ihren Editor, ziehen dreht, Strg+Rad zoomt, alle 5 s frisch. Darunter **Pipeline starten** (Ziel eingeben), letzte Läufe, **Souls je Schritt** — Standard des Agenten oder Projekt-Override, „Soul speichern" committet `.agentops/souls/<schritt>.md` ins Repo |
+| Agenten | Modell je Agent — main (Master) und die fünf Schritt-Agenten — aus OpenClaws Katalog, nach Anbieter gruppiert, plus Freitext für andere IDs; ändern darf nur Root |
 | Kosten | Kosten je Soul (7 Tage / seit Gateway-Start), Tokens nach Art — aus Prometheus |
 
 Die Schreibseite des Cockpits sind genau drei Verben, alle in `Cockpit.cs`: Gate entscheiden und Pipeline
