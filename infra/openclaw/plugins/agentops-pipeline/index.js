@@ -45,6 +45,19 @@ function projectSoul(cwd, step) {
   }
 }
 
+// Agenten je Projekt: <repo>/.agentops/agents.json — { "<step>": { "model": "provider/model" } }.
+// Fehlt ein Eintrag, gilt der globale Schritt-Agent (agents.entries.<prefix><step>) mit seinem Modell.
+function projectAgents(cwd) {
+  const file = path.join(cwd, ".agentops", "agents.json");
+  try {
+    if (!existsSync(file)) return {};
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 function json(res, status, body) {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -164,12 +177,29 @@ export default definePluginEntry({
       });
     }
 
+    // OpenAI-Modelle würden standardmäßig den Codex-Harness nehmen, dessen Binary im Image fehlt — deshalb
+    // die eingebettete Laufzeit festnageln. Das geht nur je Modell (agents.defaults.models), nicht je Agent,
+    // und gilt auch für Modelle, die ein Projekt in .agentops/agents.json wählt.
+    let pinned = null;
+    async function ensureRuntimePin(model) {
+      if (!model.startsWith("openai/")) return;
+      if (pinned == null) {
+        try {
+          const models = JSON.parse(await cli("config", "get", "agents.defaults.models"));
+          pinned = new Set(Object.entries(models).filter(([, v]) => v?.agentRuntime?.id === "openclaw").map(([k]) => k));
+        } catch {
+          pinned = new Set();
+        }
+      }
+      if (pinned.has(model)) return;
+      await cli("config", "set", `agents.defaults.models["${model}"].agentRuntime.id`, "openclaw");
+      pinned.add(model);
+    }
+
     async function setAgentModel(id, model) {
       if (!agentIds().includes(id)) throw new Error(`unknown agent: ${id}`);
       if (!MODEL_ID.test(model)) throw new Error("model must look like provider/model");
-      // OpenAI-Modelle würden standardmäßig den Codex-Harness nehmen, dessen Binary im Image fehlt — deshalb
-      // die eingebettete Laufzeit festnageln. Das geht nur je Modell (agents.defaults.models), nicht je Agent.
-      if (model.startsWith("openai/")) await cli("config", "set", `agents.defaults.models["${model}"].agentRuntime.id`, "openclaw");
+      await ensureRuntimePin(model);
       await cli("config", "set", `agents.entries.${id}.model`, model);
       log.info?.(`[pipeline] model of ${id} → ${model}`);
     }
@@ -192,11 +222,16 @@ export default definePluginEntry({
       const attempt = (state.attempts?.[step] ?? 0) + 1;
 
       const override = projectSoul(state.cwd, step);
+      // Modell je Projekt: braucht plugins.entries.agentops-pipeline.subagent.allowModelOverride = true (README)
+      const wanted = projectAgents(state.cwd)[step]?.model;
+      const model = typeof wanted === "string" && MODEL_ID.test(wanted) ? wanted : null;
+      if (model) await ensureRuntimePin(model);
       const sessionKey = runSessionKey(flowId, step, attempt);
       const run = await api.runtime.subagent.run({
         sessionKey,
         message: buildMessage(state, step, attempt),
         ...(override ? { extraSystemPrompt: override } : {}),
+        ...(model ? { provider: model.slice(0, model.indexOf("/")), model: model.slice(model.indexOf("/") + 1) } : {}),
         promptMode: "minimal",
         lightContext: true,
         deliver: false,
@@ -214,11 +249,11 @@ export default definePluginEntry({
         ...state,
         runs: { ...(state.runs ?? {}), [step]: run.runId },
         attempts: { ...(state.attempts ?? {}), [step]: attempt },
-        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: `${agentPrefix}${step}`, soulOverride: Boolean(override), startedAt: Date.now() }],
+        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: `${agentPrefix}${step}`, soulOverride: Boolean(override), model, startedAt: Date.now() }],
       };
       const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: step, stateJson: nextState });
       if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${step} not recorded (${result.reason ?? "unknown"})`);
-      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${step} (run ${run.runId})`);
+      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${step} (run ${run.runId}${model ? `, model ${model}` : ""})`);
       return run;
     }
 

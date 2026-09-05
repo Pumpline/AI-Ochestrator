@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using AgentOps.OpenClaw;
 using Microsoft.Data.Sqlite;
@@ -67,6 +68,38 @@ public static class Cockpit
             if (!File.Exists(path)) return Results.NoContent();
             File.Delete(path);
             var commit = await GitCommitAsync(repo, $".agentops/souls/{step}.md", $"Soul {step}: Projekt-Override entfernt", ct);
+            return Results.Ok(new { step, commit });
+        });
+
+        // Agenten je Projekt: <repo>/.agentops/agents.json — Modell je Schritt, committet wie die Souls.
+        // Das Plugin liest die Datei beim Start eines Schritts; fehlt ein Eintrag, gilt der globale Schritt-Agent.
+        api.MapGet("/projects/{name}/agents", (string name) =>
+        {
+            if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
+            var cfg = ReadProjectAgents(repo);
+            return Results.Ok(Steps.ToDictionary(s => s, s => new { model = ProjectModel(cfg, s) }));
+        });
+
+        api.MapPut("/projects/{name}/agents/{step}", async (string name, string step, ModelBody body, CancellationToken ct) =>
+        {
+            if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
+            var model = (body.Model ?? "").Trim();
+            if (!ModelId.IsMatch(model)) return Results.BadRequest(new { error = "model: anbieter/modell" });
+            var cfg = ReadProjectAgents(repo);
+            if (cfg[step] is not JsonObject entry) { entry = new JsonObject(); cfg[step] = entry; }
+            entry["model"] = model;
+            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: Modell {model} (im Cockpit gesetzt)", ct);
+            return Results.Ok(new { step, model, commit });
+        });
+
+        api.MapDelete("/projects/{name}/agents/{step}", async (string name, string step, CancellationToken ct) =>
+        {
+            if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
+            var cfg = ReadProjectAgents(repo);
+            if (cfg[step] is not JsonObject entry || !entry.ContainsKey("model")) return Results.NoContent();
+            entry.Remove("model");
+            if (entry.Count == 0) cfg.Remove(step);
+            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: Projekt-Modell entfernt", ct);
             return Results.Ok(new { step, commit });
         });
 
@@ -187,6 +220,29 @@ public static class Cockpit
     private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride);
 
     private static string SoulPath(string repo, string step) => Path.Combine(repo, ".agentops", "souls", $"{step}.md");
+    private static readonly Regex ModelId = new(@"^[a-z0-9][a-z0-9_-]{0,40}/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$", RegexOptions.Compiled);
+    private static string AgentsPath(string repo) => Path.Combine(repo, ".agentops", "agents.json");
+
+    /// <summary>{ "&lt;step&gt;": { "model": "provider/model", … } } — andere Felder bleiben unangetastet, nur model wird gelesen und gesetzt.</summary>
+    private static JsonObject ReadProjectAgents(string repo)
+    {
+        var path = AgentsPath(repo);
+        if (!File.Exists(path)) return new JsonObject();
+        try { return JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? new JsonObject(); }
+        catch (JsonException) { return new JsonObject(); }
+    }
+
+    private static string? ProjectModel(JsonObject cfg, string step) =>
+        cfg[step] is JsonObject o && o["model"] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    private static async Task<string> WriteProjectAgentsAsync(string repo, JsonObject cfg, string message, CancellationToken ct)
+    {
+        var path = AgentsPath(repo);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (cfg.Count == 0) { if (File.Exists(path)) File.Delete(path); }
+        else await File.WriteAllTextAsync(path, cfg.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n", ct);
+        return await GitCommitAsync(repo, ".agentops/agents.json", message, ct);
+    }
 
     private static bool TryRepo(string root, string name, out string repo)
     {

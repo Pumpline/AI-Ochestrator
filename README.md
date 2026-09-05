@@ -175,6 +175,7 @@ cp -r infra/openclaw/plugins/agentops-pipeline openclaw/extensions/
 mkdir -p openclaw/extensions/agentops-pipeline/node_modules && ln -sfn /app openclaw/extensions/agentops-pipeline/node_modules/openclaw
 docker exec agentops-openclaw node openclaw.mjs config set plugins.allow '["diagnostics-otel","agentops-pipeline"]'
 docker exec agentops-openclaw node openclaw.mjs config set plugins.entries.agentops-pipeline '{"enabled":true,"config":{"reposRoot":"/home/node/repos","ownerSessionKey":"agent:main:main"}}'
+docker exec agentops-openclaw node openclaw.mjs config set plugins.entries.agentops-pipeline.subagent.allowModelOverride true   # Modell je Projekt (.agentops/agents.json)
 docker compose --profile openclaw restart openclaw
 ```
 
@@ -226,6 +227,13 @@ Dauer (`subagent_runs.payload_json`), und das Transkript des Agenten (`agents/<i
 `transcript_events`) trägt an jeder Assistant-Nachricht `usage` samt Kosten und die Run-ID. Das Cockpit liest alle drei
 nur und zeigt je Schritt Frage, Antwort, Dauer, Tokens und Kosten (`GET /api/flows/{id}/steps`).
 
+**Agenten je Projekt.** `<repo>/.agentops/agents.json` — `{ "plan": { "model": "anthropic/claude-opus-5" }, … }` — setzt das Modell je
+Schritt für dieses Projekt; das Cockpit schreibt und committet die Datei (`PUT/DELETE /api/projects/{name}/agents/{step}`),
+das Plugin liest sie beim Start jedes Schritts und gibt `provider`/`model` an `subagent.run` mit. Dafür muss das Plugin
+freigeschaltet sein: `plugins.entries.agentops-pipeline.subagent.allowModelOverride: true` (optional `allowedModels`
+als Allowlist). Fehlt ein Eintrag, gilt der Standard-Agent. Der Laufzeit-Pin für OpenAI-Modelle wird beim Start des
+Schritts gesetzt, falls er fehlt.
+
 **Modell je Agent.** `GET /agents` liest `agents.entries.*.model` (main = Master, sonst Laufzeit-Standard mit Tag
 `default` im Katalog), `PUT /agents/<id>` schreibt es über OpenClaws CLI (`config set`, validiert, Hot-Reload ohne
 Neustart). Für OpenAI-Modelle wird zusätzlich `agents.defaults.models["<modell>"].agentRuntime.id = openclaw` gesetzt —
@@ -275,7 +283,7 @@ Solange nichts konfiguriert ist, bietet die Login-Seite den `API_TOKEN` an. Sess
 | Flows | alle Flows aus dem Read-Model mit **Stufenstreifen** (plan · code · test · review · gate · ship), Ziel und Repo aus dem Plugin, alle 10 s aktualisiert |
 | Flow | großer Streifen, **Karte dieses Laufs** (Dauer und Tokens auf jedem Bogen), **Schritte** — je Versuch Modell, Dauer, Tokens, Kosten, aufklappbar Frage und Antwort des Agenten —, Zeitleiste aus `/api/flows/{id}/events`; am Gate: **Freigeben** / **Ablehnen**; bei hängendem Schritt: „Schritt als beendet behandeln" |
 | Wartet auf dich | offene Gates, Zähler in der Leiste |
-| Projekt | **Karte** — die Souls des Projekts als Ring um das Repo in einer 3D-Welt (three.js r128 von cdnjs, sonst kein Framework), Bögen zwischen den Nachbarn = Pipeline, gestrichelte Brücke review → code über die Mitte; laufende Flows als Lichtimpuls auf dem Bogen zum aktuellen Schritt (Indigo) plus Speiche vom arbeitenden Schritt zum Repo, erledigte Schritte grün, offenes Gate kreist amber, gestoppter Schritt rot; flach gezeichnet, als Spirale im Raum, Klick auf eine Soul öffnet ihren Editor, ziehen dreht, Strg+Rad zoomt, alle 5 s frisch. Darunter **Pipeline starten** (Ziel eingeben), letzte Läufe, **Souls je Schritt** — Standard des Agenten oder Projekt-Override, „Soul speichern" committet `.agentops/souls/<schritt>.md` ins Repo |
+| Projekt | **Karte** — die Souls des Projekts als Ring um das Repo in einer 3D-Welt (three.js r128 von cdnjs, sonst kein Framework), Bögen zwischen den Nachbarn = Pipeline, gestrichelte Brücke review → code über die Mitte; laufende Flows als Lichtimpuls auf dem Bogen zum aktuellen Schritt (Indigo) plus Speiche vom arbeitenden Schritt zum Repo, erledigte Schritte grün, offenes Gate kreist amber, gestoppter Schritt rot; flach gezeichnet, als Spirale im Raum, Klick auf eine Soul öffnet ihren Editor, ziehen dreht, Strg+Rad zoomt, alle 5 s frisch. Darunter **Pipeline starten** (Ziel eingeben), letzte Läufe, **Agenten des Projekts** je Schritt: Modell (Standard-Agent, Katalog oder freie ID → `.agentops/agents.json`) und Soul (Standard oder Projekt-Override → `.agentops/souls/<schritt>.md`), beides als Commit ins Repo |
 | Agenten | Modell je Agent — main (Master) und die fünf Schritt-Agenten — aus OpenClaws Katalog, nach Anbieter gruppiert, plus Freitext für andere IDs; ändern darf nur Root |
 | Kosten | Kosten je Soul (7 Tage / seit Gateway-Start), Tokens nach Art — aus Prometheus |
 

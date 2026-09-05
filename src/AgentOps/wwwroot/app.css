@@ -189,6 +189,9 @@ main.page{padding:18px 20px 60px}
 .select{width:100%;background:var(--panel);border:.5px solid var(--border-strong);border-radius:var(--radius);color:var(--text);padding:7px 10px;font:inherit;font-size:13px}
 .select:focus{border-color:var(--accent);outline:none}
 .model-pick{display:flex;flex-direction:column;gap:6px;min-width:300px}
+.model-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.model-row .select{flex:1;min-width:260px;width:auto}
+.model-row .input{flex:1;min-width:220px}
 .steps{display:flex;flex-direction:column}
 .step{border-top:.5px solid var(--border)}
 .step summary,.step__sum{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;cursor:pointer;font-size:13px}

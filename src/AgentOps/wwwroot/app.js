@@ -269,7 +269,17 @@ function disposeMap() { if (liveMap) { liveMap.dispose(); liveMap = null; } }
 async function pageProject(name) {
   setTitle("Projekt", name);
   disposeMap();
-  const [souls, byId] = await Promise.all([api(`/projects/${encodeURIComponent(name)}/souls`), pipelineIndex()]);
+  const [souls, byId, agents, global] = await Promise.all([
+    api(`/projects/${encodeURIComponent(name)}/souls`), pipelineIndex(),
+    api(`/projects/${encodeURIComponent(name)}/agents`).catch(() => ({})),
+    api("/agents").catch(() => ({ agents: [], models: [] })),
+  ]);
+  const models = global.models ?? []; const known = (key) => models.some((m) => m.key === key);
+  const byProvider = new Map(); for (const m of models) byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), m]);
+  const globalModel = (s) => (global.agents ?? []).find((a) => a.step === s)?.model ?? null;
+  const modelOptions = (current, fallback) => `<option value=""${!current ? " selected" : ""}>Standard-Agent${fallback ? ` — ${esc(fallback)}` : ""}</option>`
+    + [...byProvider.keys()].sort().map((p) => `<optgroup label="${esc(p)}">${byProvider.get(p).map((m) => `<option value="${esc(m.key)}"${m.key === current ? " selected" : ""}${m.available ? "" : " disabled"}>${esc(m.name)} — ${esc(m.key)}${m.available ? "" : " (kein Zugang)"}</option>`).join("")}</optgroup>`).join("")
+    + `<option value="__other"${current && !known(current) ? " selected" : ""}>Anderes Modell (ID eingeben)…</option>`;
   const mine = () => [...byId.values()].filter((f) => f.state?.repo === name);
   const runs = mine().sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 6);
   const active = SOUL_STEPS.includes(pageProject.tab) ? pageProject.tab : "plan";
@@ -278,18 +288,33 @@ async function pageProject(name) {
     ${card("Pipeline starten", "play", `<div class="card__body"><form id="run-form" class="field"><label class="field__label" for="goal">Was soll die Pipeline in <span class="mono">${esc(name)}</span> tun?</label><textarea class="textarea" id="goal" required placeholder="Zum Beispiel: Add divide(a, b) with a test for division by zero"></textarea><div class="actions" style="margin-top:4px"><button class="btn btn--primary" type="submit">${icon("play", "icon icon--sm")}Pipeline starten</button><span class="dim" style="font-size:12px">plan → code → test → review → Gate → ship</span></div></form></div>`)}
     ${card("Letzte Läufe", "workflow", runs.length ? `<div class="card__body card__body--flush"><table class="table"><tbody>${runs.map((f) => `<tr class="link" data-href="#/flows/${esc(f.flowId)}"><td style="width:240px">${strip({ stage: f.currentStep, status: f.status, gateOpen: f.status === "waiting" && f.wait?.kind === "gate" })}</td><td class="strong cell-goal">${esc(f.goal)}</td><td>${statusDot(f.status)}</td><td class="num dim">${esc(timeAgo(f.updatedAt))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Noch kein Lauf in diesem Projekt.</div>`)}
     <section class="card">
-      <div class="card__header"><div class="card__title">${icon("folder")}Souls</div><span class="dim" style="font-size:12px">Projekt-Override wird nach <span class="mono">.agentops/souls/</span> committet</span></div>
-      <div class="tabs">${SOUL_STEPS.map((s) => `<button class="tab${s === active ? " is-active" : ""}" type="button" data-tab="${s}">${s}${souls[s]?.override != null ? `<span class="dot" title="Projekt-Override"></span>` : ""}</button>`).join("")}</div>
+      <div class="card__header"><div class="card__title">${icon("cpu")}Agenten des Projekts</div><span class="dim" style="font-size:12px">Modell und Soul je Schritt — liegt in <span class="mono">.agentops/</span> und wird committet</span></div>
+      <div class="tabs">${SOUL_STEPS.map((s) => `<button class="tab${s === active ? " is-active" : ""}" type="button" data-tab="${s}">${s}${souls[s]?.override != null || agents[s]?.model ? `<span class="dot" title="Projekt-Einstellung"></span>` : ""}</button>`).join("")}</div>
       <div class="card__body" id="soul-body"></div>
     </section>`;
-  const renderSoul = (s) => {
+  const renderAgent = (s) => {
     const d = souls[s] ?? {}; const has = d.override != null;
+    const proj = agents[s]?.model ?? null; const fallback = globalModel(s);
     $("#soul-body").innerHTML = `
+      <div class="field" style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="field__label">Modell für <span class="mono">${s}</span> in diesem Projekt</span><span class="soul-tag ${proj ? "override" : ""}">${proj ? "Projekt-Modell aktiv" : "Standard-Agent"}</span></div>
+        <div class="model-row"><select class="select" id="agent-model">${modelOptions(proj, fallback)}</select><input class="input mono" id="agent-other" placeholder="anbieter/modell" value="${esc(proj ?? "")}"${!proj || known(proj) ? " hidden" : ""}><button class="btn btn--primary btn--sm" id="agent-save" type="button">Modell speichern</button></div>
+      </div>
       <div class="field">
         <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="field__label">Soul für <span class="mono">${s}</span></span><span class="soul-tag ${has ? "override" : ""}">${has ? "Projekt-Override aktiv" : "Standard des Agenten"}</span></div>
         <textarea class="textarea textarea--mono" id="soul-text" spellcheck="false">${esc(has ? d.override : (d.default ?? ""))}</textarea>
         <div class="actions"><button class="btn btn--primary btn--sm" id="soul-save" type="button">Soul speichern</button>${has ? `<button class="btn btn--secondary btn--sm" id="soul-reset" type="button">Override entfernen</button>` : ""}</div>
       </div>`;
+    const sel = $("#agent-model"), other = $("#agent-other");
+    sel.addEventListener("change", () => { other.hidden = sel.value !== "__other"; if (sel.value !== "__other") other.value = sel.value; else other.focus(); });
+    $("#agent-save").addEventListener("click", async () => {
+      const model = (sel.value === "__other" ? other.value : sel.value).trim();
+      try {
+        if (!model) { await api(`/projects/${encodeURIComponent(name)}/agents/${s}`, { method: "DELETE" }); toast(`${s}: wieder Standard-Agent`); }
+        else { const r = await api(`/projects/${encodeURIComponent(name)}/agents/${s}`, { method: "PUT", body: { model } }); toast(`${s} → ${model}, Commit ${r.commit}`); }
+        pageProject.tab = s; pageProject(name);
+      } catch (e) { toast(e.message, "error"); }
+    });
     $("#soul-save").addEventListener("click", async () => {
       try { const r = await api(`/projects/${encodeURIComponent(name)}/souls/${s}`, { method: "PUT", body: { text: $("#soul-text").value } }); toast(`Soul ${s} gespeichert, Commit ${r.commit}`); pageProject.tab = s; pageProject(name); }
       catch (e) { toast(e.message, "error"); }
@@ -300,7 +325,7 @@ async function pageProject(name) {
       catch (e) { toast(e.message, "error"); }
     });
   };
-  renderSoul(active);
+  renderAgent(active);
   // 3D-Karte: Souls als Knoten, Flows als Impulse — alle 5 s frisch, ohne die Seite neu zu bauen
   const mapEl = $("#map");
   liveMap = mountProjectMap(mapEl, { onSelect: (step) => {
@@ -313,7 +338,7 @@ async function pageProject(name) {
     try { const idx = await pipelineIndex(); const cur = [...idx.values()].filter((f) => f.state?.repo === name); liveMap?.update(cur); const c = $("#map-count"); if (c) c.textContent = `${cur.filter((f) => f.status === "running").length} Flows arbeiten`; } catch {}
   }, 5000);
   const origDispose = liveMap.dispose; liveMap.dispose = () => { clearInterval(liveMap.timer); origDispose(); };
-  page().querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => { page().querySelectorAll(".tab").forEach((t) => t.classList.toggle("is-active", t === b)); pageProject.tab = b.dataset.tab; renderSoul(b.dataset.tab); }));
+  page().querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => { page().querySelectorAll(".tab").forEach((t) => t.classList.toggle("is-active", t === b)); pageProject.tab = b.dataset.tab; renderAgent(b.dataset.tab); }));
   $("#run-form").addEventListener("submit", async (e) => {
     e.preventDefault(); const btn = $("#run-form button"); btn.disabled = true;
     try { const flow = await api(`/projects/${encodeURIComponent(name)}/runs`, { method: "POST", body: { goal: $("#goal").value } }); toast("Pipeline gestartet"); location.hash = `#/flows/${flow.flowId}`; }
@@ -350,7 +375,8 @@ async function pageAgents() {
   const options = (current) => providers.map((p) => `<optgroup label="${esc(p)}">${byProvider.get(p).map((m) => `<option value="${esc(m.key)}"${m.key === current ? " selected" : ""}${m.available ? "" : " disabled"}>${esc(m.name)} — ${esc(m.key)}${m.available ? "" : " (kein Zugang)"}</option>`).join("")}</optgroup>`).join("")
     + `<option value="__other"${current && !known(current) ? " selected" : ""}>Anderes Modell (ID eingeben)…</option>`;
   page().innerHTML = `
-    ${card("Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th></th></tr></thead><tbody>${agents.map((a) => `
+    <div class="alert alert--info">${icon("alert")}<span>Das sind die <strong>Standard-Agenten</strong>. Jedes Projekt kann je Schritt ein eigenes Modell und eine eigene Soul setzen — auf der Projektseite unter „Agenten des Projekts“; das landet als Commit in <span class="mono">.agentops/</span> des Repos.</span></div>
+    ${card("Standard-Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th></th></tr></thead><tbody>${agents.map((a) => `
       <tr data-agent="${esc(a.id)}"><td class="strong mono">${esc(a.id)}</td><td>${a.role === "master" ? "Master — OpenClaws Hauptagent (Chat, Delegation)" : `Pipeline-Schritt <span class="mono">${esc(a.step)}</span>`}</td>
       <td><div class="model-pick"><select class="select" data-model>${options(a.model)}</select><input class="input mono" data-other placeholder="anbieter/modell" value="${esc(a.model ?? "")}"${!a.model || known(a.model) ? " hidden" : ""}></div><span class="sub">${a.explicit ? "im Agenten gesetzt" : "Laufzeit-Standard von OpenClaw"}${a.runtime ? ` · Laufzeit ${esc(a.runtime)}` : ""}</span></td>
       <td class="num"><button class="btn btn--primary btn--sm" data-save type="button">Speichern</button></td></tr>`).join("")}</tbody></table></div>`,
