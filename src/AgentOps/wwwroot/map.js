@@ -6,7 +6,13 @@
 // Braucht THREE (r128, global) aus index.html.
 
 const ORDER = ["plan", "code", "test", "review", "gate", "ship"];
-const C = { idle: 0xb3bfcf, edge: 0xd3dce6, lit: 0x0d9488, done: 0x16a34a, gate: 0xd97706, failed: 0xdc2626, repo: 0x64748b, text: "#334155", dim: "#8b98a9" };
+// Farben folgen dem Seiten-Thema (html[data-theme]) — hell: gedeckte Farben auf hellem Grund,
+// dunkel: leuchtende auf blauschwarzem Grund. Abgefragt bei jedem update(), die Karte folgt dem Umschalten.
+const PALETTES = {
+  light: { idle: 0xb3bfcf, edge: 0xd3dce6, lit: 0x0d9488, done: 0x16a34a, gate: 0xd97706, failed: 0xdc2626, repo: 0x64748b, text: "#334155", dim: "#8b98a9" },
+  dark: { idle: 0x2a3550, edge: 0x223048, lit: 0x3d7bfa, done: 0x22c55e, gate: 0xf59e0b, failed: 0xef4444, repo: 0x8e9ab0, text: "#c6cfe1", dim: "#8e9ab0" },
+};
+let C = PALETTES[document.documentElement.dataset.theme] ?? PALETTES.dark;
 const R = 3.4;                                   // Ringradius
 const RISE = 0.45;                               // Höhenstufe je Schritt — die Spirale
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -118,6 +124,8 @@ export function mountProjectMap(container, { onSelect } = {}) {
   }
 
   function update(flows, focus = null) {
+    C = PALETTES[document.documentElement.dataset.theme] ?? PALETTES.dark;
+    repo.material.color.setHex(C.repo);
     const now = Date.now();
     const recent = (f) => now - (f.updatedAt ?? 0) < 30 * 60 * 1000;
     const counts = Object.fromEntries(ORDER.map((n) => [n, 0]));

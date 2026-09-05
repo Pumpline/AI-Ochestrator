@@ -116,13 +116,20 @@ function renderShell() {
         </div>
       </aside>
       <div class="content">
-        <header class="topbar"><span class="topbar__title" id="page-title">Dashboard</span><span class="topbar__crumb" id="page-crumb"></span><div class="topbar__right"><span class="live" id="live">verbunden</span></div></header>
+        <header class="topbar"><span class="topbar__title" id="page-title">Dashboard</span><span class="topbar__crumb" id="page-crumb"></span><div class="topbar__right"><button class="btn btn--ghost btn--sm" id="btn-theme" type="button" title="Thema wechseln">${icon(document.documentElement.dataset.theme === "dark" ? "sun" : "moon")}</button><span class="live" id="live">verbunden</span></div></header>
         <main class="page"><div class="container" id="page"></div></main>
       </div>
     </div>`;
   $("#btn-logout").addEventListener("click", async () => {
     try { await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }); } catch {}
     store.token = ""; me = null; location.hash = "#/login"; boot();
+  });
+  // Thema umschalten: steht in localStorage, die Seite wird neu gebaut, damit die 3D-Karte die Farben mitbekommt
+  $("#btn-theme").addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("agentops.theme", next); } catch {}
+    route();
   });
 }
 const page = () => $("#page");
@@ -303,7 +310,7 @@ async function pageProject(name) {
   const runs = mine().sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 6);
   const active = SOUL_STEPS.includes(pageProject.tab) ? pageProject.tab : "plan";
   page().innerHTML = `
-    ${card("Karte", "activity", `<div class="map" id="map"><div class="map__legend"><span><i style="background:#0d9488"></i>arbeitet</span><span><i style="background:#16a34a"></i>erledigt</span><span><i style="background:#d97706"></i>Gate offen</span><span><i style="background:#dc2626"></i>gestoppt</span></div><div class="map__hint">ziehen dreht · Strg+Rad zoomt · Klick öffnet die Soul</div></div>`, `<span class="dim" id="map-count" style="font-size:12px">${runs.filter((f) => f.status === "running").length} Flows arbeiten</span>`)}
+    ${card("Karte", "activity", `<div class="map" id="map"><div class="map__legend"><span><i style="background:var(--accent)"></i>arbeitet</span><span><i style="background:var(--success)"></i>erledigt</span><span><i style="background:var(--warning)"></i>Gate offen</span><span><i style="background:var(--danger)"></i>gestoppt</span></div><div class="map__hint">ziehen dreht · Strg+Rad zoomt · Klick öffnet die Soul</div></div>`, `<span class="dim" id="map-count" style="font-size:12px">${runs.filter((f) => f.status === "running").length} Flows arbeiten</span>`)}
     ${card("Pipeline starten", "play", `<div class="card__body"><form id="run-form" class="field"><label class="field__label" for="goal">Was soll die Pipeline in <span class="mono">${esc(name)}</span> tun?</label><textarea class="textarea" id="goal" required placeholder="Zum Beispiel: Add divide(a, b) with a test for division by zero"></textarea><div class="actions" style="margin-top:4px"><button class="btn btn--primary" type="submit">${icon("play", "icon icon--sm")}Pipeline starten</button><span class="dim" style="font-size:12px">plan → code → test → review → Gate → ship</span></div></form></div>`)}
     ${card("Letzte Läufe", "workflow", runs.length ? `<div class="card__body card__body--flush"><table class="table"><tbody>${runs.map((f) => `<tr class="link" data-href="#/flows/${esc(f.flowId)}"><td style="width:240px">${strip({ stage: f.currentStep, status: f.status, gateOpen: f.status === "waiting" && f.wait?.kind === "gate" })}</td><td class="strong cell-goal">${esc(f.goal)}</td><td>${statusDot(f.status)}</td><td class="num dim">${esc(timeAgo(f.updatedAt))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Noch kein Lauf in diesem Projekt.</div>`)}
     <section class="card">
