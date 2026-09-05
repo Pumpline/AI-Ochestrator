@@ -165,8 +165,8 @@ export function mountProjectMap(container, { onSelect } = {}) {
     labelEdges(focus);
   }
 
-  // Bedienung: ziehen dreht, Rad zoomt, Klick auf einen Knoten wählt ihn; ohne Eingabe pendelt die Welt leicht
-  let dragging = false, moved = 0, lastX = 0, lastY = 0, rotY = 0, rotX = 0.62, zoom = 15.5, idle = 0;
+  // Bedienung: ziehen dreht, Rad zoomt, Klick auf einen Knoten wählt ihn; die Welt bewegt sich nur, wenn man sie bewegt
+  let dragging = false, moved = 0, lastX = 0, lastY = 0, rotY = 0, rotX = 0.62, zoom = 15.5;
   const el = renderer.domElement;
   const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2();
   function pick(e) {
@@ -177,9 +177,9 @@ export function mountProjectMap(container, { onSelect } = {}) {
     return hit ? hit.object.userData.step : null;
   }
   el.style.cursor = "grab";
-  el.addEventListener("pointerdown", (e) => { dragging = true; moved = 0; idle = 0; lastX = e.clientX; lastY = e.clientY; el.setPointerCapture(e.pointerId); el.style.cursor = "grabbing"; });
+  el.addEventListener("pointerdown", (e) => { dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY; el.setPointerCapture(e.pointerId); el.style.cursor = "grabbing"; });
   el.addEventListener("pointerup", (e) => {
-    dragging = false; el.releasePointerCapture(e.pointerId); el.style.cursor = "grab"; idle = 0;
+    dragging = false; el.releasePointerCapture(e.pointerId); el.style.cursor = "grab";
     if (moved < 4 && onSelect) { const step = pick(e); if (step) onSelect(step); }
   });
   el.addEventListener("pointermove", (e) => {
@@ -197,9 +197,7 @@ export function mountProjectMap(container, { onSelect } = {}) {
   function frame() {
     raf = requestAnimationFrame(frame);
     const dt = Math.min(clock.getDelta(), 0.05);
-    if (!dragging) idle += dt;
-    const sway = REDUCED ? 0 : Math.min(1, Math.max(0, idle - 2)) * Math.sin(clock.elapsedTime * 0.2) * 0.2;
-    world.rotation.y = rotY + sway;
+    world.rotation.y = rotY;   // die Welt steht still, bis man sie dreht
     camera.position.set(0, Math.sin(rotX) * zoom, Math.cos(rotX) * zoom); camera.lookAt(0, -0.3, 0);
     for (const p of pulses) {
       if (!REDUCED) p.t = (p.t + dt * (p.speed ?? 0.4)) % 1;
