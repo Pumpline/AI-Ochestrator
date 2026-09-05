@@ -121,6 +121,9 @@ public static class Cockpit
         api.MapPost("/pipeline/flows/{id}/advance", async (HttpContext ctx, PluginClient plugin, string id, GateBody body, CancellationToken ct) =>
             await plugin.RelayAsync(HttpMethod.Post, $"/{Uri.EscapeDataString(id)}/advance", new { by = Auth.ActorName(ctx, body.By) }, ct));
 
+        api.MapPost("/pipeline/flows/{id}/cancel", async (HttpContext ctx, PluginClient plugin, string id, GateBody body, CancellationToken ct) =>
+            await plugin.RelayAsync(HttpMethod.Post, $"/{Uri.EscapeDataString(id)}/cancel", new { by = Auth.ActorName(ctx, body.By) }, ct));
+
         // Wer entscheidet, steht in der Session (Discord-Anzeigename); nur ohne Session zählt der übergebene Name.
         api.MapPost("/flows/{id}/gate", async (HttpContext ctx, PluginClient plugin, string id, GateBody body, CancellationToken ct) =>
         {

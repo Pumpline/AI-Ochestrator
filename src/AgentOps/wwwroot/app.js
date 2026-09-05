@@ -227,7 +227,7 @@ async function pageFlow(id) {
     ${card("Schritte", "cpu", steps.length ? `<div class="steps">${steps.map(stepRow).join("")}${gate ? gateRow(gate) : ""}</div>` : `<div class="empty">Kein Schrittprotokoll — der Flow lief vor dieser Version des Plugins.</div>`, `<span class="dim" style="font-size:12px">Frage, Antwort, Dauer, Tokens je Schritt</span>`)}
     ${flow.gateOpen ? `<div class="alert alert--warning">${icon("shield")}<div style="flex:1"><div style="color:var(--text);margin-bottom:8px">${p?.wait?.review === "request_changes_unresolved" ? `Die Review verlangt nach ${esc(p?.state?.reviewRounds ?? 2)} Runden immer noch Änderungen — jetzt entscheidest du.` : `Review ist durch${(p?.state?.reviewRounds ?? 0) > 0 ? ` nach ${esc(p.state.reviewRounds + 1)} Runden` : ""} — die Pipeline wartet vor <span class="mono">ship</span>.`} Sieh dir <span class="mono">.agentops/review.md</span> an, dann entscheide.</div><div class="actions"><button class="btn btn--success btn--sm" id="btn-allow" type="button">${icon("check", "icon icon--sm")}Freigeben</button><button class="btn btn--danger btn--sm" id="btn-deny" type="button">${icon("x", "icon icon--sm")}Ablehnen</button><span class="dim" style="font-size:12px">als ${esc(me?.displayName ?? "API-Token")}</span></div></div></div>` : ""}
     ${HALTED.has(flow.status) ? `<div class="alert alert--danger">${icon("alert")}<span>Stehen geblieben${p?.blockedSummary ? `: ${esc(p.blockedSummary)}` : ""}.</span></div>` : ""}
-    ${flow.status === "running" && p ? `<div class="actions"><button class="btn btn--secondary btn--sm" id="btn-advance" type="button">${icon("play", "icon icon--sm")}Schritt als beendet behandeln</button><span class="dim" style="font-size:12px">nur wenn ein Schritt hängt</span></div>` : ""}
+    ${(flow.status === "running" || flow.status === "waiting") && p ? `<div class="actions">${flow.status === "running" ? `<button class="btn btn--secondary btn--sm" id="btn-advance" type="button">${icon("play", "icon icon--sm")}Schritt als beendet behandeln</button>` : ""}<button class="btn btn--secondary btn--sm" id="btn-cancel" type="button">${icon("x", "icon icon--sm")}Abbrechen</button><span class="dim" style="font-size:12px">Eingriffe des Operators — nur wenn etwas hängt oder falsch läuft</span></div>` : ""}
     ${card("Zeitleiste", "clock", events.length ? `<div class="events">${events.map((e) => {
       const d = e.data ?? {};
       const kind = e.stream?.startsWith("approval") ? "approval" : e.type === "flow_completed" ? "done" : e.type === "halted" ? "halt" : "";
@@ -239,6 +239,11 @@ async function pageFlow(id) {
   $("#btn-advance")?.addEventListener("click", async () => {
     if (!confirm("Den aktuellen Schritt als beendet behandeln?")) return;
     try { await api(`/pipeline/flows/${encodeURIComponent(id)}/advance`, { method: "POST", body: {} }); toast("Schritt weitergeschaltet"); setTimeout(route, 800); }
+    catch (e) { toast(e.message, "error"); }
+  });
+  $("#btn-cancel")?.addEventListener("click", async () => {
+    if (!confirm("Flow abbrechen? Ein laufender Schritt läuft noch aus, sein Ergebnis wird ignoriert.")) return;
+    try { await api(`/pipeline/flows/${encodeURIComponent(id)}/cancel`, { method: "POST", body: {} }); toast("Flow abgebrochen"); setTimeout(route, 800); }
     catch (e) { toast(e.message, "error"); }
   });
   page().querySelectorAll("details.step").forEach((d) => { if (wasOpen.has(d.dataset.key)) d.open = true; });

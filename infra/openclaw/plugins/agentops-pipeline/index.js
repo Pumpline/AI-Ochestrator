@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { AsyncResource } from "node:async_hooks";
 
 const execFileAsync = promisify(execFile);
 const CONTROLLER_ID = "agentops-pipeline";
@@ -101,6 +102,13 @@ export default definePluginEntry({
     const cliPath = cfg.cliPath ?? "/app/openclaw.mjs";    // OpenClaws CLI im Container — für config get/set und models list
     const log = api.logger ?? console;
     const flows = api.runtime.tasks.managedFlows.bindSession({ sessionKey: ownerSessionKey });
+
+    // Ein Modell je Lauf erlaubt OpenClaw einem Plugin nur außerhalb eines Gateway-Requests (dann gilt
+    // plugins.entries.<id>.subagent.allowModelOverride). Aus einem HTTP-Handler heraus zählt stattdessen der
+    // Client des Requests, und der hat keinen Admin-Scope. Deshalb starten Schritte, die ein HTTP-Aufruf auslöst
+    // (start, gate, advance), im Async-Kontext der Registrierung — außerhalb jedes Requests.
+    const outsideRequest = new AsyncResource("agentops-pipeline");
+    const detached = (fn) => outsideRequest.runInAsyncScope(fn);
 
     // Kein Zustand im Plugin: OpenClaw lädt Plugin-Instanzen mehrfach und neu. Welcher Lauf zu welchem
     // Flow gehört, steht im Flow selbst (stateJson.runs[currentStep]) und im Session-Schlüssel des Laufs.
@@ -393,8 +401,25 @@ export default definePluginEntry({
             });
             const flow = created?.flow ?? created;
             if (!flow?.flowId) return json(res, 500, { error: "createManaged returned no flow", detail: created });
-            await startStep(flow.flowId, "plan");
+            try {
+              await detached(() => startStep(flow.flowId, "plan"));
+            } catch (error) {
+              // Der Flow existiert schon — nicht als Leiche stehen lassen
+              flows.fail({ flowId: flow.flowId, expectedRevision: latest(flow.flowId).revision, blockedSummary: `plan could not start: ${error?.message ?? error}`, stateJson: { ...(latest(flow.flowId).stateJson ?? {}), failedStep: "plan", failedAt: Date.now() } });
+              throw error;
+            }
             return json(res, 201, view(latest(flow.flowId)));
+          }
+
+          // Operator-Eingriff: Flow abbrechen (ein laufender Schritt läuft aus, sein Ergebnis wird ignoriert)
+          if (req.method === "POST" && rest.length === 2 && rest[1] === "cancel") {
+            const body = await readJson(req);
+            const flow = latest(rest[0]);
+            if (flow.status !== "running" && flow.status !== "waiting") return json(res, 409, { error: `flow is ${flow.status}` });
+            const by = String(body.by ?? "operator");
+            flows.fail({ flowId: flow.flowId, expectedRevision: flow.revision, blockedSummary: `cancelled by ${by}`, stateJson: { ...(flow.stateJson ?? {}), steps: closeStep(flow.stateJson ?? {}, flow.currentStep, { outcome: "cancelled" }), cancelledBy: by, cancelledAt: Date.now() } });
+            log.warn?.(`[pipeline] ${flow.flowId.slice(0, 8)}: cancelled at ${flow.currentStep} by ${by}`);
+            return json(res, 200, view(latest(rest[0])));
           }
 
           if (req.method === "GET" && rest.length === 1) {
@@ -404,7 +429,7 @@ export default definePluginEntry({
 
           if (req.method === "POST" && rest.length === 2 && rest[1] === "gate") {
             const body = await readJson(req);
-            await decideGate(rest[0], body.decision, String(body.by ?? "operator"));
+            await detached(() => decideGate(rest[0], body.decision, String(body.by ?? "operator")));
             return json(res, 200, view(latest(rest[0])));
           }
 
@@ -414,7 +439,7 @@ export default definePluginEntry({
             const flow = latest(rest[0]);
             if (flow.status !== "running" || !flow.currentStep) return json(res, 409, { error: `flow is ${flow.status}, not running` });
             log.warn?.(`[pipeline] ${flow.flowId.slice(0, 8)}: manual advance from ${flow.currentStep} by ${body.by ?? "operator"}`);
-            await onStepEnded(flow.flowId, flow.currentStep, { outcome: body.outcome ?? "ok" });
+            await detached(() => onStepEnded(flow.flowId, flow.currentStep, { outcome: body.outcome ?? "ok" }));
             return json(res, 200, view(latest(rest[0])));
           }
 
