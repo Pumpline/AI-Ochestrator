@@ -6,7 +6,7 @@
 // Braucht THREE (r128, global) aus index.html.
 
 const ORDER = ["plan", "code", "test", "review", "gate", "ship"];
-const C = { idle: 0x2a2e37, edge: 0x232a3b, lit: 0x4b57dd, done: 0x22c55e, gate: 0xf59e0b, failed: 0xef4444, repo: 0x7e88a0, text: "#c9cfde", dim: "#7e88a0" };
+const C = { idle: 0xb3bfcf, edge: 0xd3dce6, lit: 0x0d9488, done: 0x16a34a, gate: 0xd97706, failed: 0xdc2626, repo: 0x64748b, text: "#334155", dim: "#8b98a9" };
 const R = 3.4;                                   // Ringradius
 const RISE = 0.45;                               // Höhenstufe je Schritt — die Spirale
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -23,8 +23,8 @@ function sprite(lines, scale = 1) {
   s.scale.set(2.5 * scale, 0.875 * scale, 1);
   return s;
 }
-const nodeLabel = (name, sub = "") => sprite([[name.toUpperCase(), "600 34px 'Chakra Petch', sans-serif", C.text], ...(sub ? [[sub, "26px 'IBM Plex Mono', monospace", C.dim]] : [])]);
-const edgeLabel = (text) => sprite([[text, "600 30px 'IBM Plex Mono', monospace", C.text]], 1);
+const nodeLabel = (name, sub = "") => sprite([[name.toUpperCase(), "600 34px 'Space Grotesk', sans-serif", C.text], ...(sub ? [[sub, "26px 'JetBrains Mono', monospace", C.dim]] : [])]);
+const edgeLabel = (text) => sprite([[text, "600 30px 'JetBrains Mono', monospace", C.text]], 1);
 
 export function fmtDuration(ms) {
   if (ms == null || !isFinite(ms)) return "";
