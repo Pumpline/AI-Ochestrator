@@ -28,7 +28,7 @@ export function mountProjectMap(container) {
   }
 
   const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(36, 1, 0.1, 100);
+  const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100);
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   container.appendChild(renderer.domElement);
@@ -121,13 +121,13 @@ export function mountProjectMap(container) {
   }
 
   // Bedienung: ziehen dreht, Rad zoomt; ohne Eingabe pendelt die Welt leicht
-  let dragging = false, lastX = 0, lastY = 0, rotY = 0, rotX = 0.62, zoom = 10, idle = 0;
+  let dragging = false, lastX = 0, lastY = 0, rotY = 0, rotX = 0.7, zoom = 15, idle = 0;
   const el = renderer.domElement;
   el.style.cursor = "grab";
   el.addEventListener("pointerdown", (e) => { dragging = true; idle = 0; lastX = e.clientX; lastY = e.clientY; el.setPointerCapture(e.pointerId); el.style.cursor = "grabbing"; });
   el.addEventListener("pointerup", (e) => { dragging = false; el.releasePointerCapture(e.pointerId); el.style.cursor = "grab"; idle = 0; });
   el.addEventListener("pointermove", (e) => { if (!dragging) return; rotY += (e.clientX - lastX) * 0.006; rotX = Math.max(0.15, Math.min(1.3, rotX + (e.clientY - lastY) * 0.004)); lastX = e.clientX; lastY = e.clientY; });
-  el.addEventListener("wheel", (e) => { e.preventDefault(); zoom = Math.max(6, Math.min(18, zoom + e.deltaY * 0.01)); }, { passive: false });
+  el.addEventListener("wheel", (e) => { e.preventDefault(); zoom = Math.max(9, Math.min(24, zoom + e.deltaY * 0.01)); }, { passive: false });
 
   function resize() { const w = container.clientWidth || 600, h = container.clientHeight || 360; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
   const ro = new ResizeObserver(resize); ro.observe(container); resize();
@@ -139,7 +139,7 @@ export function mountProjectMap(container) {
     if (!dragging) idle += dt;
     const sway = REDUCED ? 0 : Math.min(1, Math.max(0, idle - 2)) * Math.sin(clock.elapsedTime * 0.2) * 0.2;
     world.rotation.y = rotY + sway;
-    camera.position.set(0, Math.sin(rotX) * zoom, Math.cos(rotX) * zoom); camera.lookAt(0, -0.2, 0);
+    camera.position.set(0, Math.sin(rotX) * zoom, Math.cos(rotX) * zoom); camera.lookAt(0, -0.35, 0);
     for (const p of pulses) {
       if (!REDUCED) p.t = (p.t + dt * (p.speed ?? 0.4)) % 1;
       if (p.orbit) { const a = p.t * Math.PI * 2; p.mesh.position.set(p.at.x + Math.cos(a) * 0.8, p.at.y + 0.1, p.at.z + Math.sin(a) * 0.8); }
