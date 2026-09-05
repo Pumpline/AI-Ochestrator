@@ -198,6 +198,8 @@ export default definePluginEntry({
           explicit: entry.model != null,
           thinking: entry.thinkingDefault ?? null,
           thinkingDefault: agents.defaults?.thinkingDefault ?? null,
+          tools: Array.isArray(entry.tools?.allow) ? entry.tools.allow : null,
+          toolsProfile: entry.tools?.profile ?? agents.defaults?.tools?.profile ?? null,
           runtime: entry.agentRuntime?.id ?? (model ? agents.defaults?.models?.[model]?.agentRuntime?.id : null) ?? null,
           workspace: entry.workspace ?? null,
         };
@@ -238,6 +240,15 @@ export default definePluginEntry({
       if (!THINKING_LEVELS.includes(level)) throw new Error(`thinking must be one of ${THINKING_LEVELS.join(", ")}`);
       await cli("config", "set", `agents.entries.${id}.thinkingDefault`, level);
       log.info?.(`[pipeline] thinking of ${id} → ${level}`);
+    }
+
+    // Tool-Liste je Agent: agents.entries.<id>.tools.allow (absolute Allowlist); leer = OpenClaws Standard-Policy.
+    // Für die Vorlagen pipeline-<step> gilt sie auch für alle Projekt-Agenten ohne eigene Liste (Abgleich vor dem Schritt).
+    async function setAgentTools(id, list) {
+      if (!agentIds().includes(id)) throw new Error(`unknown agent: ${id}`);
+      const tools = list.filter((t) => typeof t === "string" && TOOL_ID.test(t));
+      await configPatch({ agents: { entries: { [id]: { tools: tools.length ? { allow: tools } : null } } } });
+      log.info?.(`[pipeline] tools of ${id} → ${tools.length ? tools.join("/") : "default"}`);
     }
 
     // Mehrere Werte in einem validierten Schreibvorgang: config patch (Objekte mergen, null löscht).
@@ -473,6 +484,7 @@ export default definePluginEntry({
             const body = await readJson(req);
             if (body.model != null) await setAgentModel(rest[1], String(body.model).trim());
             if (body.thinking != null) await setAgentThinking(rest[1], String(body.thinking).trim());
+            if (Array.isArray(body.tools)) await setAgentTools(rest[1], body.tools);
             return json(res, 200, (await listAgents()).find((a) => a.id === rest[1]));
           }
           // Der Tool-Katalog fürs Cockpit (Kern-Tools nach Gruppen)

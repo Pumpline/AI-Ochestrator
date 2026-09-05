@@ -394,8 +394,10 @@ async function pageCosts() {
 // nur Anbieter, deren Schlüssel auf dem Server liegt. Andere IDs per Freitext.
 async function pageAgents() {
   setTitle("Agenten");
-  const d = await api("/agents");
+  const [d, toolCatalog] = await Promise.all([api("/agents"), api("/tools").catch(() => ({ groups: [] }))]);
   const models = d.models ?? []; const agents = d.agents ?? [];
+  const toolGroups = (toolCatalog.groups ?? []).filter((g) => g.tools?.length);
+  const toolPicker = (current) => `<details class="toolpick"><summary>${current?.length ? `${current.length} Tools erlaubt` : "Standard-Policy — alle Tools"}</summary><div class="tools tools--compact">${toolGroups.map((g) => `<div class="tools__group"><div class="tools__label">${esc(g.label)}</div>${g.tools.map((t) => `<label class="tools__item" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.id)}"${current?.includes(t.id) ? " checked" : ""}><span class="mono">${esc(t.id)}</span></label>`).join("")}</div>`).join("") || `<div class="dim" style="font-size:12px">Katalog nicht erreichbar.</div>`}</div></details>`;
   const byProvider = new Map();
   for (const m of models) byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), m]);
   const providers = [...byProvider.keys()].sort();
@@ -403,11 +405,12 @@ async function pageAgents() {
   const options = (current) => providers.map((p) => `<optgroup label="${esc(p)}">${byProvider.get(p).map((m) => `<option value="${esc(m.key)}"${m.key === current ? " selected" : ""}${m.available ? "" : " disabled"}>${esc(m.name)} — ${esc(m.key)}${m.available ? "" : " (kein Zugang)"}</option>`).join("")}</optgroup>`).join("")
     + `<option value="__other"${current && !known(current) ? " selected" : ""}>Anderes Modell (ID eingeben)…</option>`;
   page().innerHTML = `
-    <div class="alert alert--info">${icon("alert")}<span>Das sind die <strong>Standard-Agenten</strong>. Jedes Projekt kann je Schritt ein eigenes Modell und eine eigene Soul setzen — auf der Projektseite unter „Agenten des Projekts“; das landet als Commit in <span class="mono">.agentops/</span> des Repos.</span></div>
-    ${card("Standard-Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th>Effort</th><th></th></tr></thead><tbody>${agents.map((a) => `
+    <div class="alert alert--info">${icon("alert")}<span>Das sind die <strong>Vorlagen</strong>. Jedes Projekt bekommt eigene Agenten je Schritt, die Modell, Effort und Tools von hier erben, solange das Projekt nichts anderes sagt — Projektseite, „Agenten des Projekts“, als Commit in <span class="mono">.agentops/</span> des Repos. Eine Tool-Liste ist eine absolute Allowlist: nichts angehakt heißt OpenClaws Standard-Policy.</span></div>
+    ${card("Standard-Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th>Effort</th><th>Tools</th><th></th></tr></thead><tbody>${agents.map((a) => `
       <tr data-agent="${esc(a.id)}"><td class="strong mono">${esc(a.id)}</td><td>${a.role === "master" ? "Master — OpenClaws Hauptagent (Chat, Delegation)" : `Pipeline-Schritt <span class="mono">${esc(a.step)}</span>`}</td>
       <td><div class="model-pick"><select class="select" data-model>${options(a.model)}</select><input class="input mono" data-other placeholder="anbieter/modell" value="${esc(a.model ?? "")}"${!a.model || known(a.model) ? " hidden" : ""}></div><span class="sub">${a.explicit ? "im Agenten gesetzt" : "Laufzeit-Standard von OpenClaw"}${a.runtime ? ` · Laufzeit ${esc(a.runtime)}` : ""}</span></td>
       <td><select class="select select--narrow" data-thinking>${thinkingOptions(a.thinking, `Standard${a.thinkingDefault ? ` — ${a.thinkingDefault}` : ""}`)}</select></td>
+      <td data-tools>${toolPicker(a.tools)}</td>
       <td class="num"><button class="btn btn--primary btn--sm" data-save type="button">Speichern</button></td></tr>`).join("")}</tbody></table></div>`,
       `<span class="dim" style="font-size:12px">${models.length} Modelle von ${providers.length} Anbieter${providers.length === 1 ? "" : "n"}</span>`)}
     <div class="alert alert--info">${icon("alert")}<span>Zur Auswahl stehen die Modelle der Anbieter, deren Schlüssel in der <span class="mono">.env</span> auf dem Server liegt — <span class="mono">OPENAI_API_KEY</span>, <span class="mono">ANTHROPIC_API_KEY</span>, <span class="mono">GEMINI_API_KEY</span>, <span class="mono">OPENROUTER_API_KEY</span> —, danach <span class="mono">docker compose --profile openclaw up -d openclaw</span>. Eine Änderung gilt ab dem nächsten Lauf; OpenClaw lädt die Konfiguration ohne Neustart.${me && !me.root ? " Ändern darf nur Root." : ""}</span></div>`;
@@ -417,8 +420,9 @@ async function pageAgents() {
     tr.querySelector("[data-save]").addEventListener("click", async () => {
       const model = (sel.value === "__other" ? other.value : sel.value).trim();
       const thinking = tr.querySelector("[data-thinking]").value;
+      const tools = [...tr.querySelectorAll("[data-tools] input:checked")].map((i) => i.value);
       if (!model) return toast("Modell-ID fehlt", "error");
-      try { await api(`/agents/${encodeURIComponent(tr.dataset.agent)}`, { method: "PUT", body: { model, thinking } }); toast(`${tr.dataset.agent} → ${model}${thinking ? `, Effort ${thinking}` : ""}`); pageAgents(); }
+      try { await api(`/agents/${encodeURIComponent(tr.dataset.agent)}`, { method: "PUT", body: { model, thinking, tools } }); toast(`${tr.dataset.agent} → ${model}${thinking ? `, Effort ${thinking}` : ""}${tools.length ? `, ${tools.length} Tools` : ", alle Tools"}`); pageAgents(); }
       catch (e) { toast(e.message, "error"); }
     });
   });

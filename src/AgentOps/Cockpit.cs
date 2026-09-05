@@ -163,11 +163,13 @@ public static class Cockpit
         api.MapPut("/agents/{id}", async (HttpContext ctx, Auth.Options auth, PluginClient plugin, string id, ModelBody body, CancellationToken ct) =>
         {
             if (!Auth.MayConfigure(ctx, auth)) return Results.Json(new { error = "Standard-Agenten ändert nur Root." }, statusCode: StatusCodes.Status403Forbidden);
-            if (body.Model is null && body.Thinking is null) return Results.BadRequest(new { error = "model oder thinking fehlt" });
+            if (body.Model is null && body.Thinking is null && body.Tools is null) return Results.BadRequest(new { error = "model, thinking oder tools fehlt" });
             if (body.Model is not null && !ModelId.IsMatch(body.Model.Trim())) return Results.BadRequest(new { error = "model: anbieter/modell" });
             if (body.Thinking is not null && body.Thinking.Trim() != "" && !ThinkingLevels.Contains(body.Thinking.Trim())) return Results.BadRequest(new { error = $"thinking: {string.Join(" | ", ThinkingLevels)}" });
+            var tools = body.Tools?.Select(t => t.Trim()).Where(t => t != "").Distinct().ToArray();
+            if (tools is not null && tools.Any(t => !ToolId.IsMatch(t))) return Results.BadRequest(new { error = "tools: Kennungen wie read, write, exec" });
             if (!SafeName.IsMatch(id)) return Results.NotFound();
-            return await plugin.RelayAsync(HttpMethod.Put, $"/agents/{Uri.EscapeDataString(id)}", new { model = body.Model?.Trim(), thinking = body.Thinking?.Trim() }, ct);
+            return await plugin.RelayAsync(HttpMethod.Put, $"/agents/{Uri.EscapeDataString(id)}", new { model = body.Model?.Trim(), thinking = body.Thinking?.Trim(), tools }, ct);
         });
 
         // Je Schritt eines Laufs: Frage, Antwort, Dauer, Tokens, Kosten. Quellen: der Lebenslauf im Flow-Zustand des
