@@ -10,8 +10,9 @@
 const ORDER = ["plan", "code", "test", "review", "gate", "ship"];
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const CENTER = new THREE.Vector3(0, 0.15, 0);
-// Winkel (°), Radius und Höhe je Station — unregelmäßig, damit es kein Ring wird
-const PLACE = { plan: [-152, 4.5, 0.9], code: [-96, 3.9, -0.7], test: [-34, 4.6, 0.7], review: [28, 4.0, -0.5], gate: [96, 4.5, 1.1], ship: [154, 4.1, -0.3] };
+// Winkel (°), Radius und Höhe je Station — bewusst unregelmäßig: Abstände zum Master von 3,1 bis 5,6,
+// Lücken von 38° bis 88°, Höhen, die nicht oben-unten alternieren. Wirkt gewachsen, nicht geplant.
+const PLACE = { plan: [-170, 5.6, -0.4], code: [-88, 3.1, -1.1], test: [-50, 5.1, 0.9], review: [38, 3.4, 0.2], gate: [100, 5.4, 1.4], ship: [160, 4.1, -0.9] };
 const POS = Object.fromEntries(Object.entries(PLACE).map(([s, [deg, r, y]]) => {
   const a = deg * Math.PI / 180;
   return [s, new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r)];
@@ -190,7 +191,7 @@ export function mountProjectMap(container, { onSelect } = {}) {
   }
 
   // Bedienung: ziehen dreht, Strg+Rad zoomt, Klick auf eine Station wählt sie
-  let dragging = false, moved = 0, lastX = 0, lastY = 0, rotY = 0, rotX = 0.52, zoom = 13;
+  let dragging = false, moved = 0, lastX = 0, lastY = 0, rotY = 0, rotX = 0.52, zoom = 14;
   const el = renderer.domElement;
   const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2();
   function pick(e) {
