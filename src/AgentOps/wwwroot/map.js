@@ -24,7 +24,7 @@ function sprite(lines, scale = 1) {
   return s;
 }
 const nodeLabel = (name, sub = "") => sprite([[name.toUpperCase(), "600 34px 'Chakra Petch', sans-serif", C.text], ...(sub ? [[sub, "26px 'IBM Plex Mono', monospace", C.dim]] : [])]);
-const edgeLabel = (text) => sprite([[text, "27px 'IBM Plex Mono', monospace", C.text]], 0.85);
+const edgeLabel = (text) => sprite([[text, "600 30px 'IBM Plex Mono', monospace", C.text]], 1);
 
 export function fmtDuration(ms) {
   if (ms == null || !isFinite(ms)) return "";
@@ -183,7 +183,8 @@ export function mountProjectMap(container, { onSelect } = {}) {
     moved += Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY);
     rotY += (e.clientX - lastX) * 0.006; rotX = Math.max(0.15, Math.min(1.3, rotX + (e.clientY - lastY) * 0.004)); lastX = e.clientX; lastY = e.clientY;
   });
-  el.addEventListener("wheel", (e) => { e.preventDefault(); zoom = Math.max(9, Math.min(24, zoom + e.deltaY * 0.01)); }, { passive: false });
+  // Zoomen nur mit Strg+Rad — das Rad allein soll die Seite scrollen, auch über der Karte
+  el.addEventListener("wheel", (e) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); zoom = Math.max(9, Math.min(24, zoom + e.deltaY * 0.01)); }, { passive: false });
 
   function resize() { const w = container.clientWidth || 600, h = container.clientHeight || 360; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
   const ro = new ResizeObserver(resize); ro.observe(container); resize();

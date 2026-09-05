@@ -194,7 +194,7 @@ function stepRow(s) {
   const tok = s.tokens; const running = s.startedAt && !s.endedAt;
   const ms = s.durationMs ?? (running ? Date.now() - s.startedAt : null);
   const verdictCls = s.verdict === "fail" || s.verdict === "request_changes" ? "badge--warning" : "badge--success";
-  return `<details class="step"><summary>
+  return `<details class="step" data-key="${esc(s.step)}-${esc(s.attempt)}"><summary>
       <span class="step__name mono">${esc(s.step)}${s.attempt > 1 ? `<span class="badge badge--accent">Versuch ${esc(s.attempt)}</span>` : ""}${running ? `<span class="badge badge--accent">läuft</span>` : ""}</span>
       <span class="step__meta">${s.model ? `<span>${esc(s.model)}</span>` : ""}<span>${esc(fmtDuration(ms))}</span><span>${tok ? `${esc(fmtTokens(tok.total))} tok` : "–"}</span><span>${s.cost != null ? esc(usd(s.cost)) : ""}</span>${s.verdict ? `<span class="badge ${verdictCls}">${esc(s.verdict)}</span>` : ""}${s.outcome && s.outcome !== "ok" ? `<span class="badge badge--danger">${esc(s.outcome)}</span>` : ""}</span>
     </summary>
@@ -207,7 +207,10 @@ function stepRow(s) {
 const gateRow = (g) => `<div class="step step--gate"><div class="step__sum"><span class="step__name mono">gate</span><span class="step__meta"><span>${esc(fmtDuration(g.waitMs))} gewartet</span>${g.by ? `<span>${g.decision === "allow" ? "freigegeben" : "abgelehnt"} von ${esc(g.by)}</span>` : `<span class="badge badge--warning">offen</span>`}</span></div></div>`;
 
 async function pageFlow(id) {
-  disposeMap();
+  // Beim Auffrischen bleibt die Karte stehen (das Canvas zieht in die neue Seite um) und offene Schritte bleiben offen.
+  const keepMap = liveMap?.id === id ? $("#map") : null;
+  if (!keepMap) disposeMap();
+  const wasOpen = new Set([...page().querySelectorAll("details.step[open]")].map((d) => d.dataset.key));
   const [flow, events, p, detail] = await Promise.all([api(`/flows/${encodeURIComponent(id)}`), api(`/flows/${encodeURIComponent(id)}/events`), api(`/pipeline/flows/${encodeURIComponent(id)}`).catch(() => null), api(`/flows/${encodeURIComponent(id)}/steps`).catch(() => null)]);
   const goal = p?.goal ?? `Flow ${short(id)}`; const state = p?.state ?? {};
   const steps = detail?.steps ?? []; const gate = detail?.gate ?? null;
@@ -238,14 +241,20 @@ async function pageFlow(id) {
     try { await api(`/pipeline/flows/${encodeURIComponent(id)}/advance`, { method: "POST", body: {} }); toast("Schritt weitergeschaltet"); setTimeout(route, 800); }
     catch (e) { toast(e.message, "error"); }
   });
+  page().querySelectorAll("details.step").forEach((d) => { if (wasOpen.has(d.dataset.key)) d.open = true; });
   if (p) {
     // Die Karte dieses einen Laufs: Dauer und Tokens auf den Bögen; Klick auf eine Soul führt zu ihr im Projekt
-    liveMap = mountProjectMap($("#map"), { onSelect: (step) => {
-      if (SOUL_STEPS.includes(step) && state.repo) { pageProject.tab = step; location.hash = `#/projects/${encodeURIComponent(state.repo)}`; }
-      else if (step === "gate") location.hash = "#/gates";
-    } });
+    if (keepMap) $("#map").replaceWith(keepMap);
+    else {
+      liveMap = mountProjectMap($("#map"), { onSelect: (step) => {
+        if (SOUL_STEPS.includes(step) && state.repo) { pageProject.tab = step; location.hash = `#/projects/${encodeURIComponent(state.repo)}`; }
+        else if (step === "gate") location.hash = "#/gates";
+      } });
+      liveMap.id = id;
+    }
     liveMap.update([p], { steps: steps.map((s) => ({ step: s.step, attempt: s.attempt, durationMs: s.durationMs ?? (s.startedAt && !s.endedAt ? Date.now() - s.startedAt : null), tokens: s.tokens?.total ?? null })), gate });
   }
+  return flow.status === "running" || flow.status === "waiting";
 }
 
 async function decide(id, decision) {
@@ -265,7 +274,7 @@ async function pageProject(name) {
   const runs = mine().sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 6);
   const active = SOUL_STEPS.includes(pageProject.tab) ? pageProject.tab : "plan";
   page().innerHTML = `
-    ${card("Karte", "activity", `<div class="map" id="map"><div class="map__legend"><span><i style="background:#4b57dd"></i>arbeitet</span><span><i style="background:#22c55e"></i>erledigt</span><span><i style="background:#f59e0b"></i>Gate offen</span><span><i style="background:#ef4444"></i>gestoppt</span></div><div class="map__hint">ziehen dreht · Rad zoomt</div></div>`, `<span class="dim" id="map-count" style="font-size:12px">${runs.filter((f) => f.status === "running").length} Flows arbeiten</span>`)}
+    ${card("Karte", "activity", `<div class="map" id="map"><div class="map__legend"><span><i style="background:#4b57dd"></i>arbeitet</span><span><i style="background:#22c55e"></i>erledigt</span><span><i style="background:#f59e0b"></i>Gate offen</span><span><i style="background:#ef4444"></i>gestoppt</span></div><div class="map__hint">ziehen dreht · Strg+Rad zoomt · Klick öffnet die Soul</div></div>`, `<span class="dim" id="map-count" style="font-size:12px">${runs.filter((f) => f.status === "running").length} Flows arbeiten</span>`)}
     ${card("Pipeline starten", "play", `<div class="card__body"><form id="run-form" class="field"><label class="field__label" for="goal">Was soll die Pipeline in <span class="mono">${esc(name)}</span> tun?</label><textarea class="textarea" id="goal" required placeholder="Zum Beispiel: Add divide(a, b) with a test for division by zero"></textarea><div class="actions" style="margin-top:4px"><button class="btn btn--primary" type="submit">${icon("play", "icon icon--sm")}Pipeline starten</button><span class="dim" style="font-size:12px">plan → code → test → review → Gate → ship</span></div></form></div>`)}
     ${card("Letzte Läufe", "workflow", runs.length ? `<div class="card__body card__body--flush"><table class="table"><tbody>${runs.map((f) => `<tr class="link" data-href="#/flows/${esc(f.flowId)}"><td style="width:240px">${strip({ stage: f.currentStep, status: f.status, gateOpen: f.status === "waiting" && f.wait?.kind === "gate" })}</td><td class="strong cell-goal">${esc(f.goal)}</td><td>${statusDot(f.status)}</td><td class="num dim">${esc(timeAgo(f.updatedAt))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Noch kein Lauf in diesem Projekt.</div>`)}
     <section class="card">
@@ -372,7 +381,7 @@ async function route() {
   markActive(path);
   try {
     if (p === "") { await pageDashboard(); refresh = setInterval(() => pageDashboard().catch(() => {}), 10000); }
-    else if (p === "flows" && arg) { await pageFlow(arg); refresh = setInterval(() => pageFlow(arg).catch(() => {}), 10000); }
+    else if (p === "flows" && arg) { if (await pageFlow(arg)) refresh = setInterval(async () => { if (!(await pageFlow(arg).catch(() => true))) clearInterval(refresh); }, 10000); }
     else if (p === "flows") { await pageFlows(); refresh = setInterval(() => pageFlows().catch(() => {}), 10000); }
     else if (p === "gates") { await pageGates(); refresh = setInterval(() => pageGates().catch(() => {}), 10000); }
     else if (p === "projects" && arg) await pageProject(arg);

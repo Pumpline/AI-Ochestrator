@@ -167,11 +167,10 @@ export default definePluginEntry({
     async function setAgentModel(id, model) {
       if (!agentIds().includes(id)) throw new Error(`unknown agent: ${id}`);
       if (!MODEL_ID.test(model)) throw new Error("model must look like provider/model");
+      // OpenAI-Modelle würden standardmäßig den Codex-Harness nehmen, dessen Binary im Image fehlt — deshalb
+      // die eingebettete Laufzeit festnageln. Das geht nur je Modell (agents.defaults.models), nicht je Agent.
+      if (model.startsWith("openai/")) await cli("config", "set", `agents.defaults.models["${model}"].agentRuntime.id`, "openclaw");
       await cli("config", "set", `agents.entries.${id}.model`, model);
-      // OpenAI-Modelle würden standardmäßig den Codex-Harness nehmen, dessen Binary im Image fehlt —
-      // deshalb je Agent die eingebettete Laufzeit festnageln; für andere Anbieter bleibt der Standard.
-      if (model.startsWith("openai/")) await cli("config", "set", `agents.entries.${id}.agentRuntime.id`, "openclaw");
-      else await cli("config", "unset", `agents.entries.${id}.agentRuntime`).catch(() => {});
       log.info?.(`[pipeline] model of ${id} → ${model}`);
     }
 
