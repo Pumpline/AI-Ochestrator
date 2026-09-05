@@ -77,29 +77,35 @@ public static class Cockpit
         {
             if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
             var cfg = ReadProjectAgents(repo);
-            return Results.Ok(Steps.ToDictionary(s => s, s => new { model = ProjectModel(cfg, s) }));
+            return Results.Ok(Steps.ToDictionary(s => s, s => new { model = ProjectField(cfg, s, "model"), thinking = ProjectField(cfg, s, "thinking") }));
         });
 
+        // PUT setzt model und/oder thinking; ein leerer Wert nimmt die Einstellung zurück (dann gilt der Standard-Agent).
         api.MapPut("/projects/{name}/agents/{step}", async (string name, string step, ModelBody body, CancellationToken ct) =>
         {
             if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
-            var model = (body.Model ?? "").Trim();
-            if (!ModelId.IsMatch(model)) return Results.BadRequest(new { error = "model: anbieter/modell" });
+            if (body.Model is null && body.Thinking is null) return Results.BadRequest(new { error = "model oder thinking fehlt" });
+            var model = body.Model?.Trim(); var thinking = body.Thinking?.Trim();
+            if (!string.IsNullOrEmpty(model) && !ModelId.IsMatch(model)) return Results.BadRequest(new { error = "model: anbieter/modell" });
+            if (!string.IsNullOrEmpty(thinking) && !ThinkingLevels.Contains(thinking)) return Results.BadRequest(new { error = $"thinking: {string.Join(" | ", ThinkingLevels)}" });
             var cfg = ReadProjectAgents(repo);
             if (cfg[step] is not JsonObject entry) { entry = new JsonObject(); cfg[step] = entry; }
-            entry["model"] = model;
-            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: Modell {model} (im Cockpit gesetzt)", ct);
-            return Results.Ok(new { step, model, commit });
+            var changes = new List<string>();
+            if (model is not null) { if (model == "") { if (entry.Remove("model")) changes.Add("Modell → Standard"); } else { entry["model"] = model; changes.Add($"Modell {model}"); } }
+            if (thinking is not null) { if (thinking == "") { if (entry.Remove("thinking")) changes.Add("Effort → Standard"); } else { entry["thinking"] = thinking; changes.Add($"Effort {thinking}"); } }
+            if (entry.Count == 0) cfg.Remove(step);
+            if (changes.Count == 0) return Results.Ok(new { step, model = ProjectField(cfg, step, "model"), thinking = ProjectField(cfg, step, "thinking"), commit = "unverändert" });
+            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: {string.Join(", ", changes)} (im Cockpit gesetzt)", ct);
+            return Results.Ok(new { step, model = ProjectField(cfg, step, "model"), thinking = ProjectField(cfg, step, "thinking"), commit });
         });
 
         api.MapDelete("/projects/{name}/agents/{step}", async (string name, string step, CancellationToken ct) =>
         {
             if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
             var cfg = ReadProjectAgents(repo);
-            if (cfg[step] is not JsonObject entry || !entry.ContainsKey("model")) return Results.NoContent();
-            entry.Remove("model");
-            if (entry.Count == 0) cfg.Remove(step);
-            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: Projekt-Modell entfernt", ct);
+            if (cfg[step] is null) return Results.NoContent();
+            cfg.Remove(step);
+            var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: Projekt-Einstellungen entfernt", ct);
             return Results.Ok(new { step, commit });
         });
 
@@ -140,10 +146,12 @@ public static class Cockpit
 
         api.MapPut("/agents/{id}", async (HttpContext ctx, Auth.Options auth, PluginClient plugin, string id, ModelBody body, CancellationToken ct) =>
         {
-            if (!Auth.MayConfigure(ctx, auth)) return Results.Json(new { error = "Modelle ändert nur Root." }, statusCode: StatusCodes.Status403Forbidden);
-            if (string.IsNullOrWhiteSpace(body.Model)) return Results.BadRequest(new { error = "model fehlt" });
+            if (!Auth.MayConfigure(ctx, auth)) return Results.Json(new { error = "Standard-Agenten ändert nur Root." }, statusCode: StatusCodes.Status403Forbidden);
+            if (body.Model is null && body.Thinking is null) return Results.BadRequest(new { error = "model oder thinking fehlt" });
+            if (body.Model is not null && !ModelId.IsMatch(body.Model.Trim())) return Results.BadRequest(new { error = "model: anbieter/modell" });
+            if (body.Thinking is not null && body.Thinking.Trim() != "" && !ThinkingLevels.Contains(body.Thinking.Trim())) return Results.BadRequest(new { error = $"thinking: {string.Join(" | ", ThinkingLevels)}" });
             if (!SafeName.IsMatch(id)) return Results.NotFound();
-            return await plugin.RelayAsync(HttpMethod.Put, $"/agents/{Uri.EscapeDataString(id)}", new { model = body.Model.Trim() }, ct);
+            return await plugin.RelayAsync(HttpMethod.Put, $"/agents/{Uri.EscapeDataString(id)}", new { model = body.Model?.Trim(), thinking = body.Thinking?.Trim() }, ct);
         });
 
         // Je Schritt eines Laufs: Frage, Antwort, Dauer, Tokens, Kosten. Quellen: der Lebenslauf im Flow-Zustand des
@@ -163,14 +171,14 @@ public static class Cockpit
                 foreach (var s in steps.EnumerateArray())
                     entries.Add(new(OpenClawState.StrOf(s, "step") ?? "?", (int)(OpenClawState.LongOf(s, "attempt") ?? 1), OpenClawState.StrOf(s, "runId") ?? "",
                         OpenClawState.LongOf(s, "startedAt"), OpenClawState.LongOf(s, "endedAt"), OpenClawState.StrOf(s, "outcome"), OpenClawState.StrOf(s, "verdict"),
-                        s.TryGetProperty("soulOverride", out var so) && so.ValueKind == JsonValueKind.True));
+                        s.TryGetProperty("soulOverride", out var so) && so.ValueKind == JsonValueKind.True, OpenClawState.StrOf(s, "thinking")));
             }
             else if (state.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Object)
             {
                 // Ältere Flows ohne Lebenslauf: nur der letzte Versuch je Schritt ist bekannt
                 var attempts = OpenClawState.Obj(state, "attempts");
                 foreach (var pr in runs.EnumerateObject())
-                    entries.Add(new(pr.Name, (int)(OpenClawState.LongOf(attempts, pr.Name) ?? 1), pr.Value.GetString() ?? "", null, null, null, null, false));
+                    entries.Add(new(pr.Name, (int)(OpenClawState.LongOf(attempts, pr.Name) ?? 1), pr.Value.GetString() ?? "", null, null, null, null, false, null));
                 entries.Sort((a, b) => Array.IndexOf(Steps, a.Step).CompareTo(Array.IndexOf(Steps, b.Step)));
             }
 
@@ -189,7 +197,7 @@ public static class Cockpit
                     {
                         step = e.Step, attempt = e.Attempt, runId = e.RunId, startedAt = started, endedAt = ended,
                         durationMs = run?.ElapsedMs ?? (started is not null && ended is not null ? ended - started : null),
-                        outcome = e.Outcome ?? run?.Outcome, verdict = e.Verdict, soulOverride = e.SoulOverride,
+                        outcome = e.Outcome ?? run?.Outcome, verdict = e.Verdict, soulOverride = e.SoulOverride, thinking = e.Thinking,
                         prompt = run?.Task, answer = run?.ResultText,
                         model = usage?.Model,
                         tokens = usage is null ? null : new { input = usage.Input, output = usage.Output, cacheRead = usage.CacheRead, cacheWrite = usage.CacheWrite, total = usage.Total },
@@ -219,8 +227,8 @@ public static class Cockpit
     public sealed record SoulBody(string? Text);
     public sealed record RunBody(string? Goal);
     public sealed record GateBody(string? Decision, string? By);
-    public sealed record ModelBody(string? Model);
-    private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride);
+    public sealed record ModelBody(string? Model, string? Thinking);
+    private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride, string? Thinking);
 
     private static string SoulPath(string repo, string step) => Path.Combine(repo, ".agentops", "souls", $"{step}.md");
     private static readonly Regex ModelId = new(@"^[a-z0-9][a-z0-9_-]{0,40}/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$", RegexOptions.Compiled);
@@ -235,8 +243,11 @@ public static class Cockpit
         catch (JsonException) { return new JsonObject(); }
     }
 
-    private static string? ProjectModel(JsonObject cfg, string step) =>
-        cfg[step] is JsonObject o && o["model"] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+    // OpenClaws Thinking-Level, im Cockpit "Effort"
+    public static readonly string[] ThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
+
+    private static string? ProjectField(JsonObject cfg, string step, string field) =>
+        cfg[step] is JsonObject o && o[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 
     private static async Task<string> WriteProjectAgentsAsync(string repo, JsonObject cfg, string message, CancellationToken ct)
     {

@@ -192,6 +192,7 @@ main.page{padding:18px 20px 60px}
 .model-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .model-row .select{flex:1;min-width:260px;width:auto}
 .model-row .input{flex:1;min-width:220px}
+.select--narrow{width:auto;min-width:150px;flex:0 0 auto}
 .steps{display:flex;flex-direction:column}
 .step{border-top:.5px solid var(--border)}
 .step summary,.step__sum{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px;cursor:pointer;font-size:13px}

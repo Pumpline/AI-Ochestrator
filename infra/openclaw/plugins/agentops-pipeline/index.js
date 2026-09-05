@@ -21,6 +21,8 @@ const GATE_BEFORE = "ship";
 const ROUTE = "/plugins/agentops-pipeline";
 const MAX_REVIEW_ROUNDS = 2;   // review → code → test → review, höchstens so oft; danach entscheidet der Mensch am Gate
 const MODEL_ID = /^[a-z0-9][a-z0-9_-]{0,40}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;   // provider/model
+// OpenClaws Thinking-Level ("Effort"): je Agent als thinkingDefault, je Lauf als thinkingLevel der vorab angelegten Session
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
 
 // Die Schritte sprechen über Dateien im Repo (§16). Ihr Urteil steht in der letzten nicht-leeren Zeile:
 // test.md → TESTS PASS | TESTS FAIL, review.md → APPROVE | REQUEST_CHANGES.
@@ -46,8 +48,8 @@ function projectSoul(cwd, step) {
   }
 }
 
-// Agenten je Projekt: <repo>/.agentops/agents.json — { "<step>": { "model": "provider/model" } }.
-// Fehlt ein Eintrag, gilt der globale Schritt-Agent (agents.entries.<prefix><step>) mit seinem Modell.
+// Agenten je Projekt: <repo>/.agentops/agents.json — { "<step>": { "model": "provider/model", "thinking": "high" } }.
+// Fehlt ein Eintrag, gilt der globale Schritt-Agent (agents.entries.<prefix><step>) mit Modell und thinkingDefault.
 function projectAgents(cwd) {
   const file = path.join(cwd, ".agentops", "agents.json");
   try {
@@ -158,6 +160,13 @@ export default definePluginEntry({
     }
     const agentIds = () => ["main", ...STEPS.map((s) => `${agentPrefix}${s}`)];
 
+    // Gateway-Methoden über die CLI (api.runtime.gateway.request bleibt gebündelten Plugins vorbehalten).
+    async function gatewayCall(method, params) {
+      const token = process.env.OPENCLAW_GATEWAY_TOKEN;
+      const out = await cli("gateway", "call", method, "--params", JSON.stringify(params), "--json", "--url", cfg.gatewayUrl ?? "ws://127.0.0.1:18789", ...(token ? ["--token", token] : []));
+      try { return JSON.parse(out); } catch { return out; }
+    }
+
     let modelCache = { at: 0, models: [] };
     async function listModels() {
       if (Date.now() - modelCache.at < 5 * 60 * 1000) return modelCache.models;
@@ -179,6 +188,8 @@ export default definePluginEntry({
           step: id === "main" ? null : id.slice(agentPrefix.length),
           model,
           explicit: entry.model != null,
+          thinking: entry.thinkingDefault ?? null,
+          thinkingDefault: agents.defaults?.thinkingDefault ?? null,
           runtime: entry.agentRuntime?.id ?? (model ? agents.defaults?.models?.[model]?.agentRuntime?.id : null) ?? null,
           workspace: entry.workspace ?? null,
         };
@@ -212,6 +223,15 @@ export default definePluginEntry({
       log.info?.(`[pipeline] model of ${id} → ${model}`);
     }
 
+    // Effort je Agent: agents.entries.<id>.thinkingDefault; leer = OpenClaws Standard
+    async function setAgentThinking(id, level) {
+      if (!agentIds().includes(id)) throw new Error(`unknown agent: ${id}`);
+      if (!level) { await cli("config", "unset", `agents.entries.${id}.thinkingDefault`).catch(() => {}); log.info?.(`[pipeline] thinking of ${id} → default`); return; }
+      if (!THINKING_LEVELS.includes(level)) throw new Error(`thinking must be one of ${THINKING_LEVELS.join(", ")}`);
+      await cli("config", "set", `agents.entries.${id}.thinkingDefault`, level);
+      log.info?.(`[pipeline] thinking of ${id} → ${level}`);
+    }
+
     // Lebenslauf eines Schritts: stateJson.steps ist eine Liste aller Versuche mit Anfang, Ende, Ausgang und Urteil.
     // Daraus liest das Cockpit Dauer je Schritt; Frage und Antwort stehen bei OpenClaw (subagent_runs).
     function closeStep(state, step, event, verdict) {
@@ -231,10 +251,20 @@ export default definePluginEntry({
 
       const override = projectSoul(state.cwd, step);
       // Modell je Projekt: braucht plugins.entries.agentops-pipeline.subagent.allowModelOverride = true (README)
-      const wanted = projectAgents(state.cwd)[step]?.model;
-      const model = typeof wanted === "string" && MODEL_ID.test(wanted) ? wanted : null;
+      const projectAgent = projectAgents(state.cwd)[step] ?? {};
+      const model = typeof projectAgent.model === "string" && MODEL_ID.test(projectAgent.model) ? projectAgent.model : null;
+      const thinking = typeof projectAgent.thinking === "string" && THINKING_LEVELS.includes(projectAgent.thinking) ? projectAgent.thinking : null;
       if (model) await ensureRuntimePin(model);
       const sessionKey = runSessionKey(flowId, step, attempt);
+      // Effort je Projekt: die Session des Laufs vorab mit thinkingLevel anlegen — subagent.run kennt kein Thinking,
+      // eine Session-Einstellung geht dem thinkingDefault des Agenten vor. Ein Fehler hier bricht den Schritt nicht ab.
+      if (thinking) {
+        try {
+          await gatewayCall("sessions.create", { key: sessionKey, agentId: `${agentPrefix}${step}`, thinkingLevel: thinking });
+        } catch (error) {
+          log.warn?.(`[pipeline] ${flowId.slice(0, 8)}/${step}: thinking ${thinking} not applied (${error?.message ?? error})`);
+        }
+      }
       const run = await api.runtime.subagent.run({
         sessionKey,
         message: buildMessage(state, step, attempt),
@@ -257,7 +287,7 @@ export default definePluginEntry({
         ...state,
         runs: { ...(state.runs ?? {}), [step]: run.runId },
         attempts: { ...(state.attempts ?? {}), [step]: attempt },
-        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: `${agentPrefix}${step}`, soulOverride: Boolean(override), model, startedAt: Date.now() }],
+        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: `${agentPrefix}${step}`, soulOverride: Boolean(override), model, thinking, startedAt: Date.now() }],
       };
       const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: step, stateJson: nextState });
       if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${step} not recorded (${result.reason ?? "unknown"})`);
@@ -379,7 +409,8 @@ export default definePluginEntry({
           }
           if (req.method === "PUT" && rest[0] === "agents" && rest.length === 2) {
             const body = await readJson(req);
-            await setAgentModel(rest[1], String(body.model ?? "").trim());
+            if (body.model !== undefined) await setAgentModel(rest[1], String(body.model ?? "").trim());
+            if (body.thinking !== undefined) await setAgentThinking(rest[1], String(body.thinking ?? "").trim());
             return json(res, 200, (await listAgents()).find((a) => a.id === rest[1]));
           }
 

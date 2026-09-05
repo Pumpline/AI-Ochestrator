@@ -5,6 +5,9 @@ import { mountProjectMap, fmtDuration, fmtTokens } from "/map.js";
 
 const STEPS = ["plan", "code", "test", "review", "gate", "ship"];
 const SOUL_STEPS = ["plan", "code", "test", "review", "ship"];
+// OpenClaws Thinking-Level — im Cockpit „Effort“. Was ein Modell davon kann, entscheidet OpenClaw beim Lauf.
+const THINKING = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
+const thinkingOptions = (current, fallbackLabel) => `<option value=""${!current ? " selected" : ""}>${esc(fallbackLabel)}</option>` + THINKING.map((t) => `<option value="${t}"${t === current ? " selected" : ""}>${t}</option>`).join("");
 const HALTED = new Set(["failed", "blocked", "lost", "cancelled"]);
 const NAV = [
   { route: "", title: "Dashboard", icon: "dashboard" },
@@ -196,7 +199,7 @@ function stepRow(s) {
   const verdictCls = s.verdict === "fail" || s.verdict === "request_changes" ? "badge--warning" : "badge--success";
   return `<details class="step" data-key="${esc(s.step)}-${esc(s.attempt)}"><summary>
       <span class="step__name mono">${esc(s.step)}${s.attempt > 1 ? `<span class="badge badge--accent">Versuch ${esc(s.attempt)}</span>` : ""}${running ? `<span class="badge badge--accent">läuft</span>` : ""}</span>
-      <span class="step__meta">${s.model ? `<span>${esc(s.model)}</span>` : ""}<span>${esc(fmtDuration(ms))}</span><span>${tok ? `${esc(fmtTokens(tok.total))} tok` : "–"}</span><span>${s.cost != null ? esc(usd(s.cost)) : ""}</span>${s.verdict ? `<span class="badge ${verdictCls}">${esc(s.verdict)}</span>` : ""}${s.outcome && s.outcome !== "ok" ? `<span class="badge badge--danger">${esc(s.outcome)}</span>` : ""}</span>
+      <span class="step__meta">${s.model ? `<span>${esc(s.model)}</span>` : ""}${s.thinking ? `<span title="Effort (Thinking-Level) aus dem Projekt">effort ${esc(s.thinking)}</span>` : ""}<span>${esc(fmtDuration(ms))}</span><span>${tok ? `${esc(fmtTokens(tok.total))} tok` : "–"}</span><span>${s.cost != null ? esc(usd(s.cost)) : ""}</span>${s.verdict ? `<span class="badge ${verdictCls}">${esc(s.verdict)}</span>` : ""}${s.outcome && s.outcome !== "ok" ? `<span class="badge badge--danger">${esc(s.outcome)}</span>` : ""}</span>
     </summary>
     <div class="step__body">
       ${tok ? `<div class="step__tokens mono">Eingabe ${tok.input.toLocaleString("de-DE")} · Ausgabe ${tok.output.toLocaleString("de-DE")} · Cache ${(tok.cacheRead + tok.cacheWrite).toLocaleString("de-DE")} · ${esc(s.calls)} Modellaufrufe${s.soulOverride ? " · Projekt-Soul" : ""}</div>` : `<div class="step__tokens">Keine Tokens gefunden — das Transkript des Agenten ist nicht erreichbar oder der Lauf ist noch offen.</div>`}
@@ -290,6 +293,7 @@ async function pageProject(name) {
   const models = global.models ?? []; const known = (key) => models.some((m) => m.key === key);
   const byProvider = new Map(); for (const m of models) byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), m]);
   const globalModel = (s) => (global.agents ?? []).find((a) => a.step === s)?.model ?? null;
+  const globalThinking = (s) => { const a = (global.agents ?? []).find((x) => x.step === s); return a?.thinking ?? a?.thinkingDefault ?? null; };
   const modelOptions = (current, fallback) => `<option value=""${!current ? " selected" : ""}>Standard-Agent${fallback ? ` — ${esc(fallback)}` : ""}</option>`
     + [...byProvider.keys()].sort().map((p) => `<optgroup label="${esc(p)}">${byProvider.get(p).map((m) => `<option value="${esc(m.key)}"${m.key === current ? " selected" : ""}${m.available ? "" : " disabled"}>${esc(m.name)} — ${esc(m.key)}${m.available ? "" : " (kein Zugang)"}</option>`).join("")}</optgroup>`).join("")
     + `<option value="__other"${current && !known(current) ? " selected" : ""}>Anderes Modell (ID eingeben)…</option>`;
@@ -307,11 +311,13 @@ async function pageProject(name) {
     </section>`;
   const renderAgent = (s) => {
     const d = souls[s] ?? {}; const has = d.override != null;
-    const proj = agents[s]?.model ?? null; const fallback = globalModel(s);
+    const proj = agents[s]?.model ?? null; const fallback = globalModel(s); const projThinking = agents[s]?.thinking ?? null;
     $("#soul-body").innerHTML = `
       <div class="field" style="margin-bottom:16px">
         <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="field__label">Modell für <span class="mono">${s}</span> in diesem Projekt</span><span class="soul-tag ${proj ? "override" : ""}">${proj ? "Projekt-Modell aktiv" : "Standard-Agent"}</span></div>
-        <div class="model-row"><select class="select" id="agent-model">${modelOptions(proj, fallback)}</select><input class="input mono" id="agent-other" placeholder="anbieter/modell" value="${esc(proj ?? "")}"${!proj || known(proj) ? " hidden" : ""}><button class="btn btn--primary btn--sm" id="agent-save" type="button">Modell speichern</button></div>
+        <div class="model-row"><select class="select" id="agent-model">${modelOptions(proj, fallback)}</select><input class="input mono" id="agent-other" placeholder="anbieter/modell" value="${esc(proj ?? "")}"${!proj || known(proj) ? " hidden" : ""}></div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:6px"><span class="field__label">Effort (Thinking-Level) für <span class="mono">${s}</span> in diesem Projekt</span><span class="soul-tag ${projThinking ? "override" : ""}">${projThinking ? "Projekt-Effort aktiv" : "Standard-Agent"}</span></div>
+        <div class="model-row"><select class="select select--narrow" id="agent-thinking">${thinkingOptions(projThinking, `Standard-Agent${globalThinking(s) ? ` — ${globalThinking(s)}` : ""}`)}</select><button class="btn btn--primary btn--sm" id="agent-save" type="button">Modell und Effort speichern</button></div>
       </div>
       <div class="field">
         <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="field__label">Soul für <span class="mono">${s}</span></span><span class="soul-tag ${has ? "override" : ""}">${has ? "Projekt-Override aktiv" : "Standard des Agenten"}</span></div>
@@ -322,9 +328,10 @@ async function pageProject(name) {
     sel.addEventListener("change", () => { other.hidden = sel.value !== "__other"; if (sel.value !== "__other") other.value = sel.value; else other.focus(); });
     $("#agent-save").addEventListener("click", async () => {
       const model = (sel.value === "__other" ? other.value : sel.value).trim();
+      const thinking = $("#agent-thinking").value;
       try {
-        if (!model) { await api(`/projects/${encodeURIComponent(name)}/agents/${s}`, { method: "DELETE" }); toast(`${s}: wieder Standard-Agent`); }
-        else { const r = await api(`/projects/${encodeURIComponent(name)}/agents/${s}`, { method: "PUT", body: { model } }); toast(`${s} → ${model}, Commit ${r.commit}`); }
+        const r = await api(`/projects/${encodeURIComponent(name)}/agents/${s}`, { method: "PUT", body: { model, thinking } });
+        toast(r.model || r.thinking ? `${s}: ${[r.model, r.thinking ? `Effort ${r.thinking}` : ""].filter(Boolean).join(" · ")}, Commit ${r.commit}` : `${s}: wieder Standard-Agent`);
         pageProject.tab = s; pageProject(name);
       } catch (e) { toast(e.message, "error"); }
     });
@@ -389,9 +396,10 @@ async function pageAgents() {
     + `<option value="__other"${current && !known(current) ? " selected" : ""}>Anderes Modell (ID eingeben)…</option>`;
   page().innerHTML = `
     <div class="alert alert--info">${icon("alert")}<span>Das sind die <strong>Standard-Agenten</strong>. Jedes Projekt kann je Schritt ein eigenes Modell und eine eigene Soul setzen — auf der Projektseite unter „Agenten des Projekts“; das landet als Commit in <span class="mono">.agentops/</span> des Repos.</span></div>
-    ${card("Standard-Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th></th></tr></thead><tbody>${agents.map((a) => `
+    ${card("Standard-Modell je Agent", "cpu", `<div class="card__body card__body--flush"><table class="table"><thead><tr><th>Agent</th><th>Rolle</th><th>Modell</th><th>Effort</th><th></th></tr></thead><tbody>${agents.map((a) => `
       <tr data-agent="${esc(a.id)}"><td class="strong mono">${esc(a.id)}</td><td>${a.role === "master" ? "Master — OpenClaws Hauptagent (Chat, Delegation)" : `Pipeline-Schritt <span class="mono">${esc(a.step)}</span>`}</td>
       <td><div class="model-pick"><select class="select" data-model>${options(a.model)}</select><input class="input mono" data-other placeholder="anbieter/modell" value="${esc(a.model ?? "")}"${!a.model || known(a.model) ? " hidden" : ""}></div><span class="sub">${a.explicit ? "im Agenten gesetzt" : "Laufzeit-Standard von OpenClaw"}${a.runtime ? ` · Laufzeit ${esc(a.runtime)}` : ""}</span></td>
+      <td><select class="select select--narrow" data-thinking>${thinkingOptions(a.thinking, `Standard${a.thinkingDefault ? ` — ${a.thinkingDefault}` : ""}`)}</select></td>
       <td class="num"><button class="btn btn--primary btn--sm" data-save type="button">Speichern</button></td></tr>`).join("")}</tbody></table></div>`,
       `<span class="dim" style="font-size:12px">${models.length} Modelle von ${providers.length} Anbieter${providers.length === 1 ? "" : "n"}</span>`)}
     <div class="alert alert--info">${icon("alert")}<span>Zur Auswahl stehen die Modelle der Anbieter, deren Schlüssel in der <span class="mono">.env</span> auf dem Server liegt — <span class="mono">OPENAI_API_KEY</span>, <span class="mono">ANTHROPIC_API_KEY</span>, <span class="mono">GEMINI_API_KEY</span>, <span class="mono">OPENROUTER_API_KEY</span> —, danach <span class="mono">docker compose --profile openclaw up -d openclaw</span>. Eine Änderung gilt ab dem nächsten Lauf; OpenClaw lädt die Konfiguration ohne Neustart.${me && !me.root ? " Ändern darf nur Root." : ""}</span></div>`;
@@ -400,8 +408,9 @@ async function pageAgents() {
     sel.addEventListener("change", () => { other.hidden = sel.value !== "__other"; if (sel.value !== "__other") other.value = sel.value; else other.focus(); });
     tr.querySelector("[data-save]").addEventListener("click", async () => {
       const model = (sel.value === "__other" ? other.value : sel.value).trim();
+      const thinking = tr.querySelector("[data-thinking]").value;
       if (!model) return toast("Modell-ID fehlt", "error");
-      try { await api(`/agents/${encodeURIComponent(tr.dataset.agent)}`, { method: "PUT", body: { model } }); toast(`${tr.dataset.agent} → ${model}`); pageAgents(); }
+      try { await api(`/agents/${encodeURIComponent(tr.dataset.agent)}`, { method: "PUT", body: { model, thinking } }); toast(`${tr.dataset.agent} → ${model}${thinking ? `, Effort ${thinking}` : ""}`); pageAgents(); }
       catch (e) { toast(e.message, "error"); }
     });
   });
