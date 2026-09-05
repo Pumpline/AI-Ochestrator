@@ -421,7 +421,8 @@ export default definePluginEntry({
           const dst = path.join(r.workspace, "SOUL.md");
           const src = r.templateWorkspace ? path.join(r.templateWorkspace, "SOUL.md") : null;
           if (src && existsSync(src)) copyFileSync(src, dst);
-          else if (!existsSync(dst)) writeFileSync(dst, genericSoul(node));
+          // agents add legt OpenClaws eigene Bootstrap-Soul ab ("Who You Are") — die ersetzt die knappe Pipeline-Soul, nichts anderes
+          else if (!existsSync(dst) || !readFileSync(dst, "utf8").startsWith("# SOUL — ")) writeFileSync(dst, genericSoul(node));
         } catch (error) { log.warn?.(`[pipeline] soul sync ${node}: ${error?.message ?? error}`); }
       }
       return { ids, resolved };
