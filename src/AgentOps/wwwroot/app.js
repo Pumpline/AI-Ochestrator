@@ -285,11 +285,13 @@ function disposeMap() { if (liveMap) { liveMap.dispose(); liveMap = null; } }
 async function pageProject(name) {
   setTitle("Projekt", name);
   disposeMap();
-  const [souls, byId, agents, global] = await Promise.all([
+  const [souls, byId, agents, global, toolCatalog] = await Promise.all([
     api(`/projects/${encodeURIComponent(name)}/souls`), pipelineIndex(),
     api(`/projects/${encodeURIComponent(name)}/agents`).catch(() => ({})),
     api("/agents").catch(() => ({ agents: [], models: [] })),
+    api("/tools").catch(() => ({ groups: [] })),
   ]);
+  const toolGroups = (toolCatalog.groups ?? []).filter((g) => g.tools?.length);
   const models = global.models ?? []; const known = (key) => models.some((m) => m.key === key);
   const byProvider = new Map(); for (const m of models) byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), m]);
   const globalModel = (s) => (global.agents ?? []).find((a) => a.step === s)?.model ?? null;
@@ -305,19 +307,22 @@ async function pageProject(name) {
     ${card("Pipeline starten", "play", `<div class="card__body"><form id="run-form" class="field"><label class="field__label" for="goal">Was soll die Pipeline in <span class="mono">${esc(name)}</span> tun?</label><textarea class="textarea" id="goal" required placeholder="Zum Beispiel: Add divide(a, b) with a test for division by zero"></textarea><div class="actions" style="margin-top:4px"><button class="btn btn--primary" type="submit">${icon("play", "icon icon--sm")}Pipeline starten</button><span class="dim" style="font-size:12px">plan → code → test → review → Gate → ship</span></div></form></div>`)}
     ${card("Letzte Läufe", "workflow", runs.length ? `<div class="card__body card__body--flush"><table class="table"><tbody>${runs.map((f) => `<tr class="link" data-href="#/flows/${esc(f.flowId)}"><td style="width:240px">${strip({ stage: f.currentStep, status: f.status, gateOpen: f.status === "waiting" && f.wait?.kind === "gate" })}</td><td class="strong cell-goal">${esc(f.goal)}</td><td>${statusDot(f.status)}</td><td class="num dim">${esc(timeAgo(f.updatedAt))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Noch kein Lauf in diesem Projekt.</div>`)}
     <section class="card">
-      <div class="card__header"><div class="card__title">${icon("cpu")}Agenten des Projekts</div><span class="dim" style="font-size:12px">Modell und Soul je Schritt — liegt in <span class="mono">.agentops/</span> und wird committet</span></div>
-      <div class="tabs">${SOUL_STEPS.map((s) => `<button class="tab${s === active ? " is-active" : ""}" type="button" data-tab="${s}">${s}${souls[s]?.override != null || agents[s]?.model ? `<span class="dot" title="Projekt-Einstellung"></span>` : ""}</button>`).join("")}</div>
+      <div class="card__header"><div class="card__title">${icon("cpu")}Agenten des Projekts</div><span class="dim" style="font-size:12px">eigene Agenten je Schritt: Modell, Effort, Tools, Soul — liegt in <span class="mono">.agentops/</span> und wird committet</span></div>
+      <div class="tabs">${SOUL_STEPS.map((s) => `<button class="tab${s === active ? " is-active" : ""}" type="button" data-tab="${s}">${s}${souls[s]?.override != null || agents[s]?.model || agents[s]?.thinking || agents[s]?.tools?.length ? `<span class="dot" title="Projekt-Einstellung"></span>` : ""}</button>`).join("")}</div>
       <div class="card__body" id="soul-body"></div>
     </section>`;
   const renderAgent = (s) => {
     const d = souls[s] ?? {}; const has = d.override != null;
-    const proj = agents[s]?.model ?? null; const fallback = globalModel(s); const projThinking = agents[s]?.thinking ?? null;
+    const proj = agents[s]?.model ?? null; const fallback = globalModel(s); const projThinking = agents[s]?.thinking ?? null; const projTools = agents[s]?.tools ?? [];
     $("#soul-body").innerHTML = `
       <div class="field" style="margin-bottom:16px">
         <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="field__label">Modell für <span class="mono">${s}</span> in diesem Projekt</span><span class="soul-tag ${proj ? "override" : ""}">${proj ? "Projekt-Modell aktiv" : "Standard-Agent"}</span></div>
         <div class="model-row"><select class="select" id="agent-model">${modelOptions(proj, fallback)}</select><input class="input mono" id="agent-other" placeholder="anbieter/modell" value="${esc(proj ?? "")}"${!proj || known(proj) ? " hidden" : ""}></div>
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:6px"><span class="field__label">Effort (Thinking-Level) für <span class="mono">${s}</span> in diesem Projekt</span><span class="soul-tag ${projThinking ? "override" : ""}">${projThinking ? "Projekt-Effort aktiv" : "Standard-Agent"}</span></div>
-        <div class="model-row"><select class="select select--narrow" id="agent-thinking">${thinkingOptions(projThinking, `Standard-Agent${globalThinking(s) ? ` — ${globalThinking(s)}` : ""}`)}</select><button class="btn btn--primary btn--sm" id="agent-save" type="button">Modell und Effort speichern</button></div>
+        <div class="model-row"><select class="select select--narrow" id="agent-thinking">${thinkingOptions(projThinking, `Standard-Agent${globalThinking(s) ? ` — ${globalThinking(s)}` : ""}`)}</select></div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:6px"><span class="field__label">Tools für <span class="mono">${s}</span> in diesem Projekt</span><span class="soul-tag ${projTools.length ? "override" : ""}">${projTools.length ? `${projTools.length} Tools erlaubt` : "Standard-Agent — alle Tools der Vorlage"}</span></div>
+        <div class="tools" id="agent-tools">${toolGroups.map((g) => `<div class="tools__group"><div class="tools__label">${esc(g.label)}</div>${g.tools.map((t) => `<label class="tools__item" title="${esc(t.description)}"><input type="checkbox" value="${esc(t.id)}"${projTools.includes(t.id) ? " checked" : ""}><span class="mono">${esc(t.id)}</span></label>`).join("")}</div>`).join("") || `<div class="dim" style="font-size:12px">Tool-Katalog nicht erreichbar.</div>`}</div>
+        <div class="actions"><button class="btn btn--primary btn--sm" id="agent-save" type="button">Modell, Effort und Tools speichern</button><span class="dim" style="font-size:12px">keine Tools angehakt = Vorlage; angehakt = nur diese Tools</span></div>
       </div>
       <div class="field">
         <div style="display:flex;justify-content:space-between;align-items:baseline"><span class="field__label">Soul für <span class="mono">${s}</span></span><span class="soul-tag ${has ? "override" : ""}">${has ? "Projekt-Override aktiv" : "Standard des Agenten"}</span></div>
@@ -329,11 +334,14 @@ async function pageProject(name) {
     $("#agent-save").addEventListener("click", async () => {
       const model = (sel.value === "__other" ? other.value : sel.value).trim();
       const thinking = $("#agent-thinking").value;
+      const tools = [...page().querySelectorAll("#agent-tools input:checked")].map((i) => i.value);
+      const btn = $("#agent-save"); btn.disabled = true;
       try {
-        const r = await api(`/projects/${encodeURIComponent(name)}/agents/${s}`, { method: "PUT", body: { model, thinking } });
-        toast(r.model || r.thinking ? `${s}: ${[r.model, r.thinking ? `Effort ${r.thinking}` : ""].filter(Boolean).join(" · ")}, Commit ${r.commit}` : `${s}: wieder Standard-Agent`);
+        const r = await api(`/projects/${encodeURIComponent(name)}/agents/${s}`, { method: "PUT", body: { model, thinking, tools } });
+        const v = r.view ?? {};
+        toast(v.model || v.thinking || v.tools?.length ? `${s}: ${[v.model, v.thinking ? `Effort ${v.thinking}` : "", v.tools?.length ? `${v.tools.length} Tools` : ""].filter(Boolean).join(" · ")}, Commit ${r.commit}` : `${s}: wieder Standard-Agent`);
         pageProject.tab = s; pageProject(name);
-      } catch (e) { toast(e.message, "error"); }
+      } catch (e) { toast(e.message, "error"); btn.disabled = false; }
     });
     $("#soul-save").addEventListener("click", async () => {
       try { const r = await api(`/projects/${encodeURIComponent(name)}/souls/${s}`, { method: "PUT", body: { text: $("#soul-text").value } }); toast(`Soul ${s} gespeichert, Commit ${r.commit}`); pageProject.tab = s; pageProject(name); }

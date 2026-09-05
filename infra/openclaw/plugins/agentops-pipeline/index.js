@@ -8,8 +8,9 @@
 // Dazu: Modell je Agent lesen und setzen — über OpenClaws eigene CLI (validierter Schreibvorgang, Hot-Reload).
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { AsyncResource } from "node:async_hooks";
@@ -21,8 +22,15 @@ const GATE_BEFORE = "ship";
 const ROUTE = "/plugins/agentops-pipeline";
 const MAX_REVIEW_ROUNDS = 2;   // review → code → test → review, höchstens so oft; danach entscheidet der Mensch am Gate
 const MODEL_ID = /^[a-z0-9][a-z0-9_-]{0,40}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;   // provider/model
-// OpenClaws Thinking-Level ("Effort"): je Agent als thinkingDefault, je Lauf als thinkingLevel der vorab angelegten Session
+// OpenClaws Thinking-Level ("Effort") — je Agent als thinkingDefault
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
+const TOOL_ID = /^[a-z0-9_:-]{1,60}$/;
+
+// Agenten sind projekt-scoped: jedes Projekt bekommt seine eigenen fünf Schritt-Agenten (agents.entries.<prefix><projekt>-<step>),
+// angelegt vom Plugin beim ersten Lauf, danach mit Modell, Effort und Tools aus .agentops/agents.json synchron gehalten.
+// Die globalen Schritt-Agenten (<prefix><step>) sind die Vorlagen: ihre Werte gelten, wo das Projekt nichts sagt.
+const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "projekt";
+const projectAgentId = (prefix, repo, step) => `${prefix}${slug(repo)}-${step}`;
 
 // Die Schritte sprechen über Dateien im Repo (§16). Ihr Urteil steht in der letzten nicht-leeren Zeile:
 // test.md → TESTS PASS | TESTS FAIL, review.md → APPROVE | REQUEST_CHANGES.
@@ -102,29 +110,29 @@ export default definePluginEntry({
     const reposRoot = cfg.reposRoot ?? "/home/node/repos";
     const agentPrefix = cfg.agentPrefix ?? "pipeline-";   // agents.entries.<prefix><step>
     const cliPath = cfg.cliPath ?? "/app/openclaw.mjs";    // OpenClaws CLI im Container — für config get/set und models list
+    const homeDir = cfg.homeDir ?? process.env.OPENCLAW_HOME ?? "/home/node/.openclaw";   // Workspaces der Projekt-Agenten liegen hier
     const log = api.logger ?? console;
     const flows = api.runtime.tasks.managedFlows.bindSession({ sessionKey: ownerSessionKey });
 
-    // Ein Modell je Lauf erlaubt OpenClaw einem Plugin nur außerhalb eines Gateway-Requests (dann gilt
-    // plugins.entries.<id>.subagent.allowModelOverride). Aus einem HTTP-Handler heraus zählt stattdessen der
-    // Client des Requests, und der hat keinen Admin-Scope. Deshalb starten Schritte, die ein HTTP-Aufruf auslöst
-    // (start, gate, advance), im Async-Kontext der Registrierung — außerhalb jedes Requests.
+    // Schritte, die ein HTTP-Aufruf auslöst (start, gate, advance), starten im Async-Kontext der Registrierung —
+    // außerhalb jedes Gateway-Requests. Innerhalb eines Requests gälten die Scopes des HTTP-Clients (ohne Admin);
+    // so bleibt der Lauf ein Plugin-Subagent-Lauf wie die aus dem subagent_ended-Hook.
     const outsideRequest = new AsyncResource("agentops-pipeline");
     const detached = (fn) => outsideRequest.runInAsyncScope(fn);
 
     // Kein Zustand im Plugin: OpenClaw lädt Plugin-Instanzen mehrfach und neu. Welcher Lauf zu welchem
-    // Flow gehört, steht im Flow selbst (stateJson.runs[currentStep]) und im Session-Schlüssel des Laufs.
+    // Flow gehört, steht im Flow selbst (stateJson.runs[currentStep], stateJson.steps[].sessionKey).
     // Jeder Versuch eines Schritts bekommt eine frische Session — der zweite code-Lauf soll nicht den
     // ganzen Kontext des ersten mitschleppen, er liest die Übergabedateien.
-    const runSessionKey = (flowId, step, attempt = 1) => `agent:${agentPrefix}${step}:subagent:pipeline-${flowId.slice(0, 8)}${attempt > 1 ? `-${attempt}` : ""}`;
+    const runSessionKey = (agentId, flowId, attempt = 1) => `agent:${agentId}:subagent:pipeline-${flowId.slice(0, 8)}${attempt > 1 ? `-${attempt}` : ""}`;
 
     function resolveRun(event) {
       for (const f of mine()) {
         if (f.status !== "running" || !f.currentStep) continue;
         const step = f.currentStep;
         const expectedRun = f.stateJson?.runs?.[step];
-        const attempt = f.stateJson?.attempts?.[step] ?? 1;
-        if ((event.runId && expectedRun === event.runId) || (event.targetSessionKey && event.targetSessionKey === runSessionKey(f.flowId, step, attempt))) {
+        const open = [...(f.stateJson?.steps ?? [])].reverse().find((s) => s.step === step && s.endedAt == null);
+        if ((event.runId && expectedRun === event.runId) || (event.targetSessionKey && open && event.targetSessionKey === open.sessionKey)) {
           return { flowId: f.flowId, step };
         }
       }
@@ -232,6 +240,71 @@ export default definePluginEntry({
       log.info?.(`[pipeline] thinking of ${id} → ${level}`);
     }
 
+    // Mehrere Werte in einem validierten Schreibvorgang: config patch (Objekte mergen, null löscht).
+    async function configPatch(patch) {
+      const file = path.join(os.tmpdir(), `agentops-patch-${process.pid}-${Date.now()}.json`);
+      writeFileSync(file, JSON.stringify(patch));
+      try { return await cli("config", "patch", "--file", file); }
+      finally { try { unlinkSync(file); } catch {} }
+    }
+
+    // Der Tool-Katalog (Kern-Tools nach Gruppen), fürs Cockpit; 10 Minuten gecacht.
+    let toolCache = { at: 0, groups: [] };
+    async function listTools() {
+      if (Date.now() - toolCache.at < 10 * 60 * 1000) return toolCache.groups;
+      const res = await gatewayCall("tools.catalog", { agentId: `${agentPrefix}plan` });
+      const groups = (res?.result?.groups ?? res?.groups ?? []).map((g) => ({
+        id: g.id, label: g.label ?? g.id, source: g.source ?? null,
+        tools: (g.tools ?? []).map((t) => ({ id: t.id, label: t.label ?? t.id, description: t.description ?? "", defaultProfiles: t.defaultProfiles ?? [] })),
+      }));
+      toolCache = { at: Date.now(), groups };
+      return groups;
+    }
+
+    // Die Agenten eines Projekts anlegen und mit Vorlage + .agentops/agents.json abgleichen. Liefert step → agentId.
+    // Wird vor jedem Schritt aufgerufen; ohne Änderung ist es ein config get (~1 s), sonst ein Patch mit Hot-Reload.
+    async function ensureProjectAgents(repo, cwd) {
+      const agents = JSON.parse(await cli("config", "get", "agents"));
+      const entries = agents.entries ?? {};
+      const wanted = projectAgents(cwd);
+      const patch = {}; const creations = []; const ids = {}; const resolved = {};
+      for (const step of STEPS) {
+        const id = projectAgentId(agentPrefix, repo, step); ids[step] = id;
+        const template = entries[`${agentPrefix}${step}`] ?? {};
+        const pa = wanted[step] && typeof wanted[step] === "object" ? wanted[step] : {};
+        const model = typeof pa.model === "string" && MODEL_ID.test(pa.model) ? pa.model : modelOf(template, agents.defaults);
+        const thinking = typeof pa.thinking === "string" && THINKING_LEVELS.includes(pa.thinking) ? pa.thinking : template.thinkingDefault ?? null;
+        const toolList = Array.isArray(pa.tools) ? pa.tools.filter((t) => typeof t === "string" && TOOL_ID.test(t)) : [];
+        const tools = toolList.length ? { allow: toolList } : template.tools ?? null;
+        const workspace = `${homeDir}/workspace-${id}`;
+        resolved[step] = { model, thinking, tools: tools?.allow ?? null, workspace, templateWorkspace: template.workspace ?? `${homeDir}/workspace-${agentPrefix}${step}` };
+        if (model) await ensureRuntimePin(model);
+        const current = entries[id];
+        if (!current) creations.push({ id, workspace, model });
+        const diff = {};
+        if ((current?.model ?? null) !== (model ?? null)) diff.model = model ?? null;
+        if ((current?.thinkingDefault ?? null) !== (thinking ?? null)) diff.thinkingDefault = thinking ?? null;
+        if (JSON.stringify(current?.tools ?? null) !== JSON.stringify(tools ?? null)) diff.tools = tools ?? null;
+        if (!current) { delete diff.model; if (diff.thinkingDefault === null) delete diff.thinkingDefault; if (diff.tools === null) delete diff.tools; }
+        if (Object.keys(diff).length) patch[id] = diff;
+      }
+      for (const c of creations) {
+        mkdirSync(c.workspace, { recursive: true });
+        await cli("agents", "add", c.id, "--workspace", c.workspace, ...(c.model ? ["--model", c.model] : []), "--non-interactive");
+        log.info?.(`[pipeline] agent ${c.id} created (workspace ${c.workspace})`);
+      }
+      if (Object.keys(patch).length) {
+        await configPatch({ agents: { entries: patch } });
+        log.info?.(`[pipeline] agents of ${repo} updated: ${Object.entries(patch).map(([id, d]) => `${id} ${Object.keys(d).join("+")}`).join(", ")}`);
+      }
+      // Die Soul der Vorlage ist die Soul des Projekt-Agenten; die Projekt-Soul kommt als extraSystemPrompt obendrauf.
+      for (const step of STEPS) {
+        const src = path.join(resolved[step].templateWorkspace, "SOUL.md");
+        try { if (existsSync(src)) { mkdirSync(resolved[step].workspace, { recursive: true }); copyFileSync(src, path.join(resolved[step].workspace, "SOUL.md")); } } catch (error) { log.warn?.(`[pipeline] soul sync ${step}: ${error?.message ?? error}`); }
+      }
+      return { ids, resolved };
+    }
+
     // Lebenslauf eines Schritts: stateJson.steps ist eine Liste aller Versuche mit Anfang, Ende, Ausgang und Urteil.
     // Daraus liest das Cockpit Dauer je Schritt; Frage und Antwort stehen bei OpenClaw (subagent_runs).
     function closeStep(state, step, event, verdict) {
@@ -250,26 +323,15 @@ export default definePluginEntry({
       const attempt = (state.attempts?.[step] ?? 0) + 1;
 
       const override = projectSoul(state.cwd, step);
-      // Modell je Projekt: braucht plugins.entries.agentops-pipeline.subagent.allowModelOverride = true (README)
-      const projectAgent = projectAgents(state.cwd)[step] ?? {};
-      const model = typeof projectAgent.model === "string" && MODEL_ID.test(projectAgent.model) ? projectAgent.model : null;
-      const thinking = typeof projectAgent.thinking === "string" && THINKING_LEVELS.includes(projectAgent.thinking) ? projectAgent.thinking : null;
-      if (model) await ensureRuntimePin(model);
-      const sessionKey = runSessionKey(flowId, step, attempt);
-      // Effort je Projekt: die Session des Laufs vorab mit thinkingLevel anlegen — subagent.run kennt kein Thinking,
-      // eine Session-Einstellung geht dem thinkingDefault des Agenten vor. Ein Fehler hier bricht den Schritt nicht ab.
-      if (thinking) {
-        try {
-          await gatewayCall("sessions.create", { key: sessionKey, agentId: `${agentPrefix}${step}`, thinkingLevel: thinking });
-        } catch (error) {
-          log.warn?.(`[pipeline] ${flowId.slice(0, 8)}/${step}: thinking ${thinking} not applied (${error?.message ?? error})`);
-        }
-      }
+      // Der Agent dieses Projekts für diesen Schritt — mit Modell, Effort und Tools aus .agentops/agents.json
+      const { ids, resolved } = await ensureProjectAgents(state.repo, state.cwd);
+      const agentId = ids[step];
+      const { model, thinking, tools } = resolved[step];
+      const sessionKey = runSessionKey(agentId, flowId, attempt);
       const run = await api.runtime.subagent.run({
         sessionKey,
         message: buildMessage(state, step, attempt),
         ...(override ? { extraSystemPrompt: override } : {}),
-        ...(model ? { provider: model.slice(0, model.indexOf("/")), model: model.slice(model.indexOf("/") + 1) } : {}),
         promptMode: "minimal",
         lightContext: true,
         deliver: false,
@@ -287,11 +349,11 @@ export default definePluginEntry({
         ...state,
         runs: { ...(state.runs ?? {}), [step]: run.runId },
         attempts: { ...(state.attempts ?? {}), [step]: attempt },
-        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: `${agentPrefix}${step}`, soulOverride: Boolean(override), model, thinking, startedAt: Date.now() }],
+        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: agentId, soulOverride: Boolean(override), model, thinking, tools, startedAt: Date.now() }],
       };
       const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: step, stateJson: nextState });
       if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${step} not recorded (${result.reason ?? "unknown"})`);
-      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${step} (run ${run.runId}${model ? `, model ${model}` : ""})`);
+      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${step} (agent ${agentId}, run ${run.runId}${model ? `, model ${model}` : ""}${thinking ? `, thinking ${thinking}` : ""}${tools ? `, tools ${tools.join("/")}` : ""})`);
       return run;
     }
 
@@ -412,6 +474,19 @@ export default definePluginEntry({
             if (body.model != null) await setAgentModel(rest[1], String(body.model).trim());
             if (body.thinking != null) await setAgentThinking(rest[1], String(body.thinking).trim());
             return json(res, 200, (await listAgents()).find((a) => a.id === rest[1]));
+          }
+          // Der Tool-Katalog fürs Cockpit (Kern-Tools nach Gruppen)
+          if (req.method === "GET" && rest[0] === "tools" && rest.length === 1) {
+            return json(res, 200, { groups: await listTools() });
+          }
+          // Die Agenten eines Projekts anlegen/abgleichen, ohne einen Lauf — z.B. nach einer Änderung im Cockpit
+          if (req.method === "POST" && rest[0] === "projects" && rest.length === 3 && rest[2] === "sync") {
+            const repo = rest[1];
+            if (!repo || repo.includes("..") || repo.includes("/")) return json(res, 400, { error: "repo: name of a directory under reposRoot" });
+            const cwd = path.join(reposRoot, repo);
+            if (!existsSync(cwd)) return json(res, 404, { error: `repo not found: ${cwd}` });
+            const { ids, resolved } = await ensureProjectAgents(repo, cwd);
+            return json(res, 200, { agents: STEPS.map((s) => ({ step: s, id: ids[s], ...resolved[s], workspace: undefined, templateWorkspace: undefined })) });
           }
 
           if (req.method === "POST" && rest[0] === "start" && rest.length === 1) {

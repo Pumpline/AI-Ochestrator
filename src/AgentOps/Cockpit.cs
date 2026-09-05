@@ -77,27 +77,43 @@ public static class Cockpit
         {
             if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
             var cfg = ReadProjectAgents(repo);
-            return Results.Ok(Steps.ToDictionary(s => s, s => new { model = ProjectField(cfg, s, "model"), thinking = ProjectField(cfg, s, "thinking") }));
+            return Results.Ok(Steps.ToDictionary(s => s, s => ProjectView(cfg, s)));
         });
 
-        // PUT setzt model und/oder thinking; ein leerer Wert nimmt die Einstellung zurück (dann gilt der Standard-Agent).
-        api.MapPut("/projects/{name}/agents/{step}", async (string name, string step, ModelBody body, CancellationToken ct) =>
+        // PUT setzt model, thinking und/oder tools; ein leerer Wert nimmt die Einstellung zurück (dann gilt die Vorlage).
+        // Das Plugin gleicht die Projekt-Agenten danach ab (sync), damit die Änderung nicht erst beim nächsten Lauf sichtbar wird.
+        api.MapPut("/projects/{name}/agents/{step}", async (PluginClient plugin, string name, string step, ModelBody body, CancellationToken ct) =>
         {
             if (!TryRepo(reposRoot, name, out var repo) || !Steps.Contains(step)) return Results.NotFound();
-            if (body.Model is null && body.Thinking is null) return Results.BadRequest(new { error = "model oder thinking fehlt" });
+            if (body.Model is null && body.Thinking is null && body.Tools is null) return Results.BadRequest(new { error = "model, thinking oder tools fehlt" });
             var model = body.Model?.Trim(); var thinking = body.Thinking?.Trim();
+            var tools = body.Tools?.Select(t => t.Trim()).Where(t => t != "").Distinct().ToArray();
             if (!string.IsNullOrEmpty(model) && !ModelId.IsMatch(model)) return Results.BadRequest(new { error = "model: anbieter/modell" });
             if (!string.IsNullOrEmpty(thinking) && !ThinkingLevels.Contains(thinking)) return Results.BadRequest(new { error = $"thinking: {string.Join(" | ", ThinkingLevels)}" });
+            if (tools is not null && tools.Any(t => !ToolId.IsMatch(t))) return Results.BadRequest(new { error = "tools: Kennungen wie read, write, exec" });
             var cfg = ReadProjectAgents(repo);
             if (cfg[step] is not JsonObject entry) { entry = new JsonObject(); cfg[step] = entry; }
             var changes = new List<string>();
-            if (model is not null) { if (model == "") { if (entry.Remove("model")) changes.Add("Modell → Standard"); } else { entry["model"] = model; changes.Add($"Modell {model}"); } }
-            if (thinking is not null) { if (thinking == "") { if (entry.Remove("thinking")) changes.Add("Effort → Standard"); } else { entry["thinking"] = thinking; changes.Add($"Effort {thinking}"); } }
+            if (model is not null) { if (model == "") { if (entry.Remove("model")) changes.Add("Modell → Vorlage"); } else { entry["model"] = model; changes.Add($"Modell {model}"); } }
+            if (thinking is not null) { if (thinking == "") { if (entry.Remove("thinking")) changes.Add("Effort → Vorlage"); } else { entry["thinking"] = thinking; changes.Add($"Effort {thinking}"); } }
+            if (tools is not null)
+            {
+                var before = entry["tools"]?.ToJsonString();
+                if (tools.Length == 0) { if (entry.Remove("tools")) changes.Add("Tools → Vorlage"); }
+                else { entry["tools"] = new JsonArray(tools.Select(t => (JsonNode)t).ToArray()); if (entry["tools"]!.ToJsonString() != before) changes.Add($"Tools {string.Join("/", tools)}"); }
+            }
             if (entry.Count == 0) cfg.Remove(step);
-            if (changes.Count == 0) return Results.Ok(new { step, model = ProjectField(cfg, step, "model"), thinking = ProjectField(cfg, step, "thinking"), commit = "unverändert" });
+            if (changes.Count == 0) return Results.Ok(new { step, view = ProjectView(cfg, step), commit = "unverändert" });
             var commit = await WriteProjectAgentsAsync(repo, cfg, $"Agent {step}: {string.Join(", ", changes)} (im Cockpit gesetzt)", ct);
-            return Results.Ok(new { step, model = ProjectField(cfg, step, "model"), thinking = ProjectField(cfg, step, "thinking"), commit });
+            _ = await plugin.RelayAsync(HttpMethod.Post, $"/projects/{Uri.EscapeDataString(name)}/sync", new { }, ct);
+            return Results.Ok(new { step, view = ProjectView(cfg, step), commit });
         });
+
+        // Die Agenten eines Projekts bei OpenClaw anlegen/abgleichen (ohne Lauf) und zeigen, was gilt
+        api.MapPost("/projects/{name}/agents/sync", async (PluginClient plugin, string name, CancellationToken ct) =>
+            !TryRepo(reposRoot, name, out _) ? Results.NotFound() : await plugin.RelayAsync(HttpMethod.Post, $"/projects/{Uri.EscapeDataString(name)}/sync", new { }, ct));
+
+        api.MapGet("/tools", async (PluginClient plugin, CancellationToken ct) => await plugin.RelayAsync(HttpMethod.Get, "/tools", null, ct));
 
         api.MapDelete("/projects/{name}/agents/{step}", async (string name, string step, CancellationToken ct) =>
         {
@@ -171,14 +187,14 @@ public static class Cockpit
                 foreach (var s in steps.EnumerateArray())
                     entries.Add(new(OpenClawState.StrOf(s, "step") ?? "?", (int)(OpenClawState.LongOf(s, "attempt") ?? 1), OpenClawState.StrOf(s, "runId") ?? "",
                         OpenClawState.LongOf(s, "startedAt"), OpenClawState.LongOf(s, "endedAt"), OpenClawState.StrOf(s, "outcome"), OpenClawState.StrOf(s, "verdict"),
-                        s.TryGetProperty("soulOverride", out var so) && so.ValueKind == JsonValueKind.True, OpenClawState.StrOf(s, "thinking")));
+                        s.TryGetProperty("soulOverride", out var so) && so.ValueKind == JsonValueKind.True, OpenClawState.StrOf(s, "thinking"), OpenClawState.StrOf(s, "agent")));
             }
             else if (state.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Object)
             {
                 // Ältere Flows ohne Lebenslauf: nur der letzte Versuch je Schritt ist bekannt
                 var attempts = OpenClawState.Obj(state, "attempts");
                 foreach (var pr in runs.EnumerateObject())
-                    entries.Add(new(pr.Name, (int)(OpenClawState.LongOf(attempts, pr.Name) ?? 1), pr.Value.GetString() ?? "", null, null, null, null, false, null));
+                    entries.Add(new(pr.Name, (int)(OpenClawState.LongOf(attempts, pr.Name) ?? 1), pr.Value.GetString() ?? "", null, null, null, null, false, null, null));
                 entries.Sort((a, b) => Array.IndexOf(Steps, a.Step).CompareTo(Array.IndexOf(Steps, b.Step)));
             }
 
@@ -190,14 +206,16 @@ public static class Cockpit
                 foreach (var e in entries)
                 {
                     var run = conn is null || e.RunId == "" ? null : await OpenClawState.ReadSubagentRunAsync(conn, e.RunId, ct);
-                    var usage = e.RunId == "" ? null : await OpenClawState.ReadRunUsageAsync(Path.Combine(agentsDir, agentPrefix + e.Step, "agent", "openclaw-agent.sqlite"), e.RunId, ct);
+                    // Das Transkript liegt beim Agenten des Laufs — Projekt-Agent, sonst (ältere Flows) der globale Schritt-Agent
+                    var agentId = !string.IsNullOrEmpty(e.Agent) && SafeName.IsMatch(e.Agent) ? e.Agent : agentPrefix + e.Step;
+                    var usage = e.RunId == "" ? null : await OpenClawState.ReadRunUsageAsync(Path.Combine(agentsDir, agentId, "agent", "openclaw-agent.sqlite"), e.RunId, ct);
                     var started = e.StartedAt ?? run?.StartedAt;
                     var ended = e.EndedAt ?? run?.EndedAt;
                     result.Add(new
                     {
                         step = e.Step, attempt = e.Attempt, runId = e.RunId, startedAt = started, endedAt = ended,
                         durationMs = run?.ElapsedMs ?? (started is not null && ended is not null ? ended - started : null),
-                        outcome = e.Outcome ?? run?.Outcome, verdict = e.Verdict, soulOverride = e.SoulOverride, thinking = e.Thinking,
+                        outcome = e.Outcome ?? run?.Outcome, verdict = e.Verdict, soulOverride = e.SoulOverride, thinking = e.Thinking, agent = agentId,
                         prompt = run?.Task, answer = run?.ResultText,
                         model = usage?.Model,
                         tokens = usage is null ? null : new { input = usage.Input, output = usage.Output, cacheRead = usage.CacheRead, cacheWrite = usage.CacheWrite, total = usage.Total },
@@ -227,8 +245,8 @@ public static class Cockpit
     public sealed record SoulBody(string? Text);
     public sealed record RunBody(string? Goal);
     public sealed record GateBody(string? Decision, string? By);
-    public sealed record ModelBody(string? Model, string? Thinking);
-    private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride, string? Thinking);
+    public sealed record ModelBody(string? Model, string? Thinking, string[]? Tools);
+    private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride, string? Thinking, string? Agent);
 
     private static string SoulPath(string repo, string step) => Path.Combine(repo, ".agentops", "souls", $"{step}.md");
     private static readonly Regex ModelId = new(@"^[a-z0-9][a-z0-9_-]{0,40}/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$", RegexOptions.Compiled);
@@ -246,8 +264,14 @@ public static class Cockpit
     // OpenClaws Thinking-Level, im Cockpit "Effort"
     public static readonly string[] ThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
 
+    private static readonly Regex ToolId = new("^[a-z0-9_:-]{1,60}$", RegexOptions.Compiled);
+
     private static string? ProjectField(JsonObject cfg, string step, string field) =>
         cfg[step] is JsonObject o && o[field] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+    private static string[]? ProjectTools(JsonObject cfg, string step) =>
+        cfg[step] is JsonObject o && o["tools"] is JsonArray a ? a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s : null).Where(s => s is not null).Select(s => s!).ToArray() : null;
+    private static object ProjectView(JsonObject cfg, string step) =>
+        new { model = ProjectField(cfg, step, "model"), thinking = ProjectField(cfg, step, "thinking"), tools = ProjectTools(cfg, step) };
 
     private static async Task<string> WriteProjectAgentsAsync(string repo, JsonObject cfg, string message, CancellationToken ct)
     {
