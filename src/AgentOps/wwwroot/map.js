@@ -1,36 +1,15 @@
-// Projektkarte: die Souls eines Projekts als Ring um das Repo — als Spirale, jeder Schritt eine Stufe höher —,
-// die Pipeline als Bögen zwischen den Nachbarn, der Rückweg review → code als Brücke über die Mitte.
-// Ein laufender Flow ist ein Lichtimpuls auf dem Bogen zum aktuellen Schritt, dazu eine Speiche vom arbeitenden
-// Schritt zum Repo. Mit einem Fokus-Flow steht auf jedem Bogen, wie lange der Schritt gebraucht hat und wie viele
-// Tokens er gekostet hat. Klick auf einen Knoten → onSelect(step). Flach gezeichnet, ohne Licht und Schatten.
-// Braucht THREE (r128, global) aus index.html.
+// Projektkarte: die Pipeline als Schiene — sechs Stationen auf einer Linie, die Schritte der Reihe nach.
+// Ein laufender Flow ist ein Lichtpunkt, der die Schiene entlangläuft; die Runde review → code ist eine
+// gestrichelte Rückführung unter der Schiene. Mit einem Fokus-Flow steht über jedem Abschnitt, wie lange
+// der Schritt gebraucht hat und wie viele Tokens er gekostet hat. Klick auf eine Station → onSelect(step).
+// Reines SVG, keine Bibliothek, Farben aus dem Seiten-Thema (CSS-Variablen).
 
 const ORDER = ["plan", "code", "test", "review", "gate", "ship"];
-// Farben folgen dem Seiten-Thema (html[data-theme]) — hell: gedeckte Farben auf hellem Grund,
-// dunkel: leuchtende auf blauschwarzem Grund. Abgefragt bei jedem update(), die Karte folgt dem Umschalten.
-const PALETTES = {
-  light: { idle: 0xb3bfcf, edge: 0xd3dce6, lit: 0x0d9488, done: 0x16a34a, gate: 0xd97706, failed: 0xdc2626, repo: 0x64748b, text: "#334155", dim: "#8b98a9" },
-  dark: { idle: 0x2a2e37, edge: 0x232a3b, lit: 0x5f86ff, done: 0x22c55e, gate: 0xf59e0b, failed: 0xef4444, repo: 0x7e88a0, text: "#c9cfde", dim: "#7e88a0" },
-};
-let C = PALETTES[document.documentElement.dataset.theme] ?? PALETTES.dark;
-const R = 3.4;                                   // Ringradius
-const RISE = 0.45;                               // Höhenstufe je Schritt — die Spirale
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const angle = (i) => -Math.PI * 5 / 6 + i * (Math.PI / 3);   // plan hinten links, im Uhrzeigersinn bis ship vorne links
-const height = (i) => (i - 2.5) * RISE;
-
-function sprite(lines, scale = 1) {
-  const canvas = document.createElement("canvas"); canvas.width = 320; canvas.height = 112;
-  const ctx = canvas.getContext("2d"); ctx.textAlign = "center";
-  let y = 40;
-  for (const [text, font, color] of lines) { ctx.font = font; ctx.fillStyle = color; ctx.fillText(text, 160, y); y += 38; }
-  const tex = new THREE.CanvasTexture(canvas); tex.minFilter = THREE.LinearFilter;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false }));
-  s.scale.set(2.5 * scale, 0.875 * scale, 1);
-  return s;
-}
-const nodeLabel = (name, sub = "") => sprite([[name.toUpperCase(), "600 34px 'Space Grotesk', sans-serif", C.text], ...(sub ? [[sub, "26px 'JetBrains Mono', monospace", C.dim]] : [])]);
-const edgeLabel = (text) => sprite([[text, "600 30px 'JetBrains Mono', monospace", C.text]], 1);
+const NS = "http://www.w3.org/2000/svg";
+const W = 1000, H = 300, Y = 128;          // interne Koordinaten, skaliert per viewBox
+const X = (i) => 84 + i * 166.4;           // Stationen gleichmäßig über die Breite
+const ARC = { from: 3, to: 1, dip: 262 };  // Rückführung review → code, unter der Schiene
 
 export function fmtDuration(ms) {
   if (ms == null || !isFinite(ms)) return "";
@@ -44,62 +23,48 @@ export function fmtTokens(n) {
   return n >= 1_000_000 ? `${(n / 1e6).toFixed(1).replace(".", ",")}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1).replace(".", ",")}k` : String(n);
 }
 
+const el = (name, attrs = {}, parent) => {
+  const n = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+  if (parent) parent.appendChild(n);
+  return n;
+};
+// Punkt auf der Rückführung (quadratische Bézier) für Punkte, die review → code laufen
+const arcPoint = (t) => {
+  const p0 = { x: X(ARC.from), y: Y }, p1 = { x: X(ARC.to), y: Y }, c = { x: (p0.x + p1.x) / 2, y: ARC.dip };
+  const u = 1 - t;
+  return { x: u * u * p0.x + 2 * u * t * c.x + t * t * p1.x, y: u * u * p0.y + 2 * u * t * c.y + t * t * p1.y };
+};
+
 export function mountProjectMap(container, { onSelect } = {}) {
-  if (typeof THREE === "undefined") { container.innerHTML = `<div class="empty">3D-Karte braucht WebGL und three.js.</div>`; return { update() {}, dispose() {} }; }
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "xMidYMid meet", class: "pmap" });
+  container.prepend(svg);
 
-  class Arc extends THREE.Curve {                // Bogen auf der Spirale von Knoten i nach j
-    constructor(i, j) { super(); this.i = i; this.j = j; }
-    getPoint(t, target = new THREE.Vector3()) {
-      const a = angle(this.i) + (angle(this.j) - angle(this.i)) * t;
-      return target.set(Math.cos(a) * R, height(this.i) + (height(this.j) - height(this.i)) * t, Math.sin(a) * R);
-    }
+  // Schiene: Abschnitte zwischen Nachbarn, dazu die gestrichelte Rückführung
+  const segs = [];
+  for (let i = 0; i < ORDER.length - 1; i++) {
+    segs.push(el("line", { x1: X(i), y1: Y, x2: X(i + 1), y2: Y, class: "pm-seg" }, svg));
   }
+  const arcPath = `M ${X(ARC.from)} ${Y} Q ${(X(ARC.from) + X(ARC.to)) / 2} ${ARC.dip} ${X(ARC.to)} ${Y}`;
+  const arc = el("path", { d: arcPath, class: "pm-arc" }, svg);
 
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100);
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  container.appendChild(renderer.domElement);
-  const world = new THREE.Group(); scene.add(world);
-
-  // Knoten: flache Scheiben ohne Licht — nur Farbe trägt Bedeutung
-  const pos = {}, nodes = {}, labels = {};
+  // Stationen: Kreis, das Gate ein Rhombus; Name darunter, Zähler darunter
+  const nodes = {}, counts = {};
   ORDER.forEach((name, i) => {
-    const a = angle(i);
-    pos[name] = new THREE.Vector3(Math.cos(a) * R, height(i), Math.sin(a) * R);
-    const geo = name === "gate" ? new THREE.OctahedronGeometry(0.46) : new THREE.SphereGeometry(0.36, 20, 14);
-    const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: C.idle }));
-    mesh.position.copy(pos[name]); mesh.userData.step = name; world.add(mesh); nodes[name] = mesh;
-    const l = nodeLabel(name); l.position.set(pos[name].x, pos[name].y - 0.95, pos[name].z); world.add(l); labels[name] = l;
+    const g = el("g", { class: "pm-node", transform: `translate(${X(i)} ${Y})` }, svg);
+    if (name === "gate") el("rect", { x: -14, y: -14, width: 28, height: 28, class: "pm-shape", transform: "rotate(45)" }, g);
+    else el("circle", { r: 15, class: "pm-shape" }, g);
+    el("text", { y: 44, class: "pm-label" }, g).textContent = name;
+    const count = el("text", { y: 63, class: "pm-count" }, g);
+    g.addEventListener("click", () => onSelect?.(name));
+    nodes[name] = g; counts[name] = count;
   });
 
-  // Repo in der Mitte, auf mittlerer Höhe
-  const center = new THREE.Vector3(0, 0, 0);
-  const repo = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.6), new THREE.MeshBasicMaterial({ color: C.repo, wireframe: true, transparent: true, opacity: 0.5 }));
-  world.add(repo);
-  const repoLabel = nodeLabel("repo"); repoLabel.position.set(0, -0.8, 0); world.add(repoLabel);
+  // Bewegliches: Lichtpunkte je laufendem Flow, Puls am offenen Gate, Abschnitts-Beschriftungen im Fokus
+  let pulses = [], gateRing = null, edgeLabels = [];
 
-  // Kanten: Bögen zwischen den Nachbarn, dazu die gestrichelte Brücke review → code
-  const edges = {}, curves = {};
-  for (let i = 0; i < ORDER.length - 1; i++) {
-    const key = `${ORDER[i]}>${ORDER[i + 1]}`;
-    const curve = new Arc(i, i + 1); curves[key] = curve;
-    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(16)), new THREE.LineBasicMaterial({ color: C.edge }));
-    world.add(line); edges[key] = line;
-  }
-  const mid = pos.review.clone().add(pos.code).multiplyScalar(0.5).add(new THREE.Vector3(0, 2.2, 0));
-  const loop = new THREE.QuadraticBezierCurve3(pos.review, mid, pos.code); curves["review>code"] = loop;
-  const loopLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(loop.getPoints(32)), new THREE.LineDashedMaterial({ color: C.edge, dashSize: 0.22, gapSize: 0.16 }));
-  loopLine.computeLineDistances(); world.add(loopLine); edges["review>code"] = loopLine;
-
-  // Bewegliches: Impulse je laufendem Flow, Speichen zum Repo, Beschriftungen auf den Bögen
-  const pulseGeo = new THREE.SphereGeometry(0.1, 12, 12);
-  let pulses = [], spokes = [], edgeLabels = [];
-  const paint = (name, color) => nodes[name].material.color.setHex(color);
-
-  // Fokus: ein einzelner Lauf — Dauer und Tokens je Bogen. steps = [{ step, attempt, durationMs, tokens }], gate = { waitMs }
   function labelEdges(focus) {
-    for (const l of edgeLabels) world.remove(l); edgeLabels = [];
+    for (const t of edgeLabels) t.remove(); edgeLabels = [];
     if (!focus) return;
     const byEdge = new Map();
     for (const s of focus.steps ?? []) {
@@ -113,112 +78,78 @@ export function mountProjectMap(container, { onSelect } = {}) {
       const tok = items.some((x) => x.tokens != null) ? items.reduce((a, x) => a + (x.tokens ?? 0), 0) : null;
       const text = [items.length > 1 ? `${items.length}×` : "", fmtDuration(ms), tok != null ? `${fmtTokens(tok)} tok` : ""].filter(Boolean).join(" · ");
       if (!text) continue;
-      const l = edgeLabel(text);
-      // Beschriftung außerhalb des Rings, damit sie sich nicht mit Knoten und Brücke überlagert
-      let p;
-      if (key === "plan") p = pos.plan.clone().add(new THREE.Vector3(0, 0.75, 0));
-      else if (key === "review>code") p = curves[key].getPoint(0.5).add(new THREE.Vector3(0, 0.9, 0));
-      else { const m = curves[key].getPoint(0.5); p = new THREE.Vector3(m.x * 1.24, m.y + 0.12, m.z * 1.24); }
-      l.position.copy(p); world.add(l); edgeLabels.push(l);
+      const t = el("text", { class: "pm-elabel" }, svg);
+      if (key === "plan") { t.setAttribute("x", X(0)); t.setAttribute("y", Y - 32); }
+      else if (key === "review>code") { const p = arcPoint(0.5); t.setAttribute("x", p.x); t.setAttribute("y", p.y + 26); }
+      else { const [a, b] = key.split(">"); t.setAttribute("x", (X(ORDER.indexOf(a)) + X(ORDER.indexOf(b))) / 2); t.setAttribute("y", Y - 32); }
+      t.textContent = text; edgeLabels.push(t);
     }
   }
 
   function update(flows, focus = null) {
-    C = PALETTES[document.documentElement.dataset.theme] ?? PALETTES.dark;
-    repo.material.color.setHex(C.repo);
     const now = Date.now();
     const recent = (f) => now - (f.updatedAt ?? 0) < 30 * 60 * 1000;
-    const counts = Object.fromEntries(ORDER.map((n) => [n, 0]));
     const state = Object.fromEntries(ORDER.map((n) => [n, "idle"]));
+    const n = Object.fromEntries(ORDER.map((s) => [s, 0]));
     let loopLit = false;
-    for (const p of pulses) world.remove(p.mesh); pulses = [];
-    for (const s of spokes) world.remove(s); spokes = [];
+    for (const p of pulses) p.dot.remove(); pulses = [];
+    gateRing?.remove(); gateRing = null;
 
     for (const f of flows) {
       const step = f.currentStep && ORDER.includes(f.currentStep) ? f.currentStep : null;
       const i = step ? ORDER.indexOf(step) : -1;
       if (f.status === "running" && step) {
-        counts[step]++; state[step] = "active";
+        n[step]++; state[step] = "active";
         const fromLoop = step === "code" && (f.state?.attempts?.code ?? 1) > 1;
-        const key = fromLoop ? "review>code" : i > 0 ? `${ORDER[i - 1]}>${step}` : null;
         if (fromLoop) loopLit = true;
         for (let k = 0; k < i; k++) if (state[ORDER[k]] === "idle") state[ORDER[k]] = "done";
-        const mesh = new THREE.Mesh(pulseGeo, new THREE.MeshBasicMaterial({ color: C.lit }));
-        world.add(mesh); pulses.push({ mesh, curve: key ? curves[key] : null, at: pos[step], t: Math.random(), speed: 0.3 + Math.random() * 0.15 });
-        if (step !== "gate") {
-          const spoke = new THREE.Line(new THREE.BufferGeometry().setFromPoints([pos[step], center]), new THREE.LineBasicMaterial({ color: C.lit, transparent: true, opacity: 0.7 }));
-          world.add(spoke); spokes.push(spoke);
-        }
+        const dot = el("circle", { r: 5, class: "pm-pulse" }, svg);
+        pulses.push({ dot, to: i, from: fromLoop ? null : i - 1, t: Math.random(), speed: 0.25 + Math.random() * 0.15 });
       } else if (f.status === "waiting" && f.wait?.kind === "gate") {
-        counts.gate++; state.gate = "gate";
-        for (const n of ["plan", "code", "test", "review"]) if (state[n] === "idle") state[n] = "done";
-        const mesh = new THREE.Mesh(pulseGeo, new THREE.MeshBasicMaterial({ color: C.gate }));
-        world.add(mesh); pulses.push({ mesh, curve: null, at: pos.gate, orbit: true, t: Math.random() });
+        n.gate++; state.gate = "gate";
+        for (const s of ["plan", "code", "test", "review"]) if (state[s] === "idle") state[s] = "done";
+        gateRing = el("circle", { cx: X(ORDER.indexOf("gate")), cy: Y, r: 15, class: "pm-gatering" }, svg);
       } else if ((f.status === "failed" || f.status === "blocked") && step && (recent(f) || focus)) {
-        if (state[step] === "idle") state[step] = "failed"; counts[step]++;
+        if (state[step] === "idle") state[step] = "failed"; n[step]++;
         for (let k = 0; k < i; k++) if (state[ORDER[k]] === "idle") state[ORDER[k]] = "done";
       } else if (f.status === "succeeded" && focus) {
-        for (const n of ORDER) if (state[n] === "idle") state[n] = "done";
+        for (const s of ORDER) if (state[s] === "idle") state[s] = "done";
       }
     }
-    for (const n of ORDER) {
-      paint(n, state[n] === "active" ? C.lit : state[n] === "done" ? C.done : state[n] === "gate" ? C.gate : state[n] === "failed" ? C.failed : C.idle);
-      world.remove(labels[n]); labels[n] = nodeLabel(n, counts[n] ? `${counts[n]} ${counts[n] === 1 ? "Flow" : "Flows"}` : ""); labels[n].position.set(pos[n].x, pos[n].y - 0.95, pos[n].z); world.add(labels[n]);
+    for (const s of ORDER) {
+      nodes[s].setAttribute("class", `pm-node ${state[s] === "idle" ? "" : state[s]}`);
+      counts[s].textContent = n[s] ? `${n[s]} ${n[s] === 1 ? "Flow" : "Flows"}` : "";
     }
-    for (const [k, line] of Object.entries(edges)) {
-      const b = k.split(">")[1];
-      const lit = k === "review>code" ? loopLit || (focus?.steps ?? []).some((s) => s.step === "code" && s.attempt > 1) : (state[b] === "active" || state[b] === "gate" || (focus && state[b] === "done"));
-      line.material.color.setHex(lit ? C.lit : C.edge);
+    for (let i = 0; i < segs.length; i++) {
+      const b = ORDER[i + 1];
+      const lit = state[b] === "active" || state[b] === "gate" || (focus && state[b] === "done");
+      segs[i].setAttribute("class", `pm-seg${lit ? " lit" : ""}`);
     }
+    arc.setAttribute("class", `pm-arc${loopLit || (focus?.steps ?? []).some((s) => s.step === "code" && s.attempt > 1) ? " lit" : ""}`);
     labelEdges(focus);
   }
 
-  // Bedienung: ziehen dreht, Rad zoomt, Klick auf einen Knoten wählt ihn; die Welt bewegt sich nur, wenn man sie bewegt
-  let dragging = false, moved = 0, lastX = 0, lastY = 0, rotY = 0, rotX = 0.62, zoom = 15.5;
-  const el = renderer.domElement;
-  const ray = new THREE.Raycaster(); const ndc = new THREE.Vector2();
-  function pick(e) {
-    const r = el.getBoundingClientRect();
-    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-    ray.setFromCamera(ndc, camera);
-    const hit = ray.intersectObjects(Object.values(nodes), false)[0];
-    return hit ? hit.object.userData.step : null;
-  }
-  el.style.cursor = "grab";
-  el.addEventListener("pointerdown", (e) => { dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY; el.setPointerCapture(e.pointerId); el.style.cursor = "grabbing"; });
-  el.addEventListener("pointerup", (e) => {
-    dragging = false; el.releasePointerCapture(e.pointerId); el.style.cursor = "grab";
-    if (moved < 4 && onSelect) { const step = pick(e); if (step) onSelect(step); }
-  });
-  el.addEventListener("pointermove", (e) => {
-    if (!dragging) { el.style.cursor = pick(e) ? "pointer" : "grab"; return; }
-    moved += Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY);
-    rotY += (e.clientX - lastX) * 0.006; rotX = Math.max(0.15, Math.min(1.3, rotX + (e.clientY - lastY) * 0.004)); lastX = e.clientX; lastY = e.clientY;
-  });
-  // Zoomen nur mit Strg+Rad — das Rad allein soll die Seite scrollen, auch über der Karte
-  el.addEventListener("wheel", (e) => { if (!e.ctrlKey && !e.metaKey) return; e.preventDefault(); zoom = Math.max(9, Math.min(24, zoom + e.deltaY * 0.01)); }, { passive: false });
-
-  function resize() { const w = container.clientWidth || 600, h = container.clientHeight || 360; renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); }
-  const ro = new ResizeObserver(resize); ro.observe(container); resize();
-
-  let raf = 0; const clock = new THREE.Clock();
-  function frame() {
+  // Bewegung: Punkte laufen den Abschnitt entlang (oder der Rückführung nach), der Gate-Ring pulsiert
+  let raf = 0; let last = performance.now();
+  function frame(now) {
     raf = requestAnimationFrame(frame);
-    const dt = Math.min(clock.getDelta(), 0.05);
-    world.rotation.y = rotY;   // die Welt steht still, bis man sie dreht
-    camera.position.set(0, Math.sin(rotX) * zoom, Math.cos(rotX) * zoom); camera.lookAt(0, -0.3, 0);
-    for (const p of pulses) {
-      if (!REDUCED) p.t = (p.t + dt * (p.speed ?? 0.4)) % 1;
-      if (p.orbit) { const a = p.t * Math.PI * 2; p.mesh.position.set(p.at.x + Math.cos(a) * 0.75, p.at.y + 0.1, p.at.z + Math.sin(a) * 0.75); }
-      else if (p.curve) { p.mesh.position.copy(p.curve.getPoint(p.t)); }
-      else { p.mesh.position.set(p.at.x, p.at.y + 0.7 + Math.sin(p.t * Math.PI * 2) * 0.08, p.at.z); }
+    const dt = Math.min((now - last) / 1000, 0.05); last = now;
+    if (!REDUCED) for (const p of pulses) {
+      p.t = (p.t + dt * p.speed) % 1;
+      if (p.from == null) { const a = arcPoint(1 - p.t); p.dot.setAttribute("cx", a.x); p.dot.setAttribute("cy", a.y); }
+      else { const x = X(p.from) + (X(p.to) - X(p.from)) * p.t; p.dot.setAttribute("cx", x); p.dot.setAttribute("cy", Y); }
     }
-    renderer.render(scene, camera);
+    if (gateRing && !REDUCED) {
+      const t = (now / 1200) % 1;
+      gateRing.setAttribute("r", 15 + t * 14);
+      gateRing.setAttribute("opacity", String(1 - t));
+    }
   }
-  frame();
+  raf = requestAnimationFrame(frame);
+  update([], null);
 
   return {
     update,
-    dispose() { cancelAnimationFrame(raf); ro.disconnect(); renderer.dispose(); container.innerHTML = ""; },
+    dispose() { cancelAnimationFrame(raf); svg.remove(); },
   };
 }
