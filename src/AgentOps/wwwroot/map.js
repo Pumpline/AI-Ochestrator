@@ -10,7 +10,7 @@ const ORDER = ["plan", "code", "test", "review", "gate", "ship"];
 // dunkel: leuchtende auf blauschwarzem Grund. Abgefragt bei jedem update(), die Karte folgt dem Umschalten.
 const PALETTES = {
   light: { idle: 0xb3bfcf, edge: 0xd3dce6, lit: 0x0d9488, done: 0x16a34a, gate: 0xd97706, failed: 0xdc2626, repo: 0x64748b, text: "#334155", dim: "#8b98a9" },
-  dark: { idle: 0x2a3550, edge: 0x223048, lit: 0x3d7bfa, done: 0x22c55e, gate: 0xf59e0b, failed: 0xef4444, repo: 0x8e9ab0, text: "#c6cfe1", dim: "#8e9ab0" },
+  dark: { idle: 0x2a2e37, edge: 0x232a3b, lit: 0x5f86ff, done: 0x22c55e, gate: 0xf59e0b, failed: 0xef4444, repo: 0x7e88a0, text: "#c9cfde", dim: "#7e88a0" },
 };
 let C = PALETTES[document.documentElement.dataset.theme] ?? PALETTES.dark;
 const R = 3.4;                                   // Ringradius
