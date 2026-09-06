@@ -112,6 +112,7 @@ main.page{padding:22px 24px 60px}
 .container{max-width:1060px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
 
 /* ---------- Bausteine ---------- */
+[hidden]{display:none!important}
 .btn{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;border-radius:var(--radius-md);padding:8px 15px;border:1px solid transparent;cursor:pointer;line-height:1;transition:background .15s,border-color .15s,color .15s,box-shadow .15s,transform .05s;background:transparent;color:var(--text);box-shadow:var(--shadow)}
 .btn:active{transform:scale(.98)}
 .btn--primary{background:var(--accent-fill);color:var(--on-accent)}
@@ -304,3 +305,10 @@ main.page{padding:22px 24px 60px}
   .events .type,.events .detail{grid-column:1 / -1;border-top:0;padding-top:0}
   .table .cell-goal{max-width:200px}
 }
+
+/* Sub-Flows: verschachtelte Schritte rücken je Tiefe ein; der Sub-Flow-Schritt selbst ist eine Zeile über seinen Kindern */
+.step summary,.step__sum,.step__body{padding-left:calc(18px + var(--depth,0) * 24px)}
+.step--flow .step__sum{background:var(--hover);cursor:default}
+.tabs--flows{padding:0;gap:16px;margin-top:-6px}
+.tabs--flows .tab{font-size:12px;padding:8px 2px}
+.map-back{position:absolute;left:12px;top:12px;z-index:2}

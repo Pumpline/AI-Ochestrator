@@ -112,7 +112,7 @@ export function mountProjectMap(container, { onSelect } = {}) {
     for (const n of graph.nodes) {
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([CENTER, POS[n.id]]), new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.45 }));
       group.add(line); spokes[n.id] = line;
-      const geo = n.kind === "gate" ? new THREE.OctahedronGeometry(0.42) : new THREE.SphereGeometry(0.34, 24, 18);
+      const geo = n.kind === "gate" ? new THREE.OctahedronGeometry(0.42) : n.kind === "flow" ? new THREE.CylinderGeometry(0.46, 0.46, 0.2, 6) : new THREE.SphereGeometry(0.34, 24, 18);   // Sub-Flow: sechseckige Scheibe
       const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
       mesh.position.copy(POS[n.id]); mesh.userData.step = n.id; group.add(mesh); nodes[n.id] = mesh;
     }
@@ -159,6 +159,8 @@ export function mountProjectMap(container, { onSelect } = {}) {
     const now = Date.now();
     const recent = (f) => now - (f.updatedAt ?? 0) < 30 * 60 * 1000;
     const ids = g.graph.nodes.map((n) => n.id);
+    // Schrittnamen der Läufe auf die Knoten dieses Graphen: coding/pr zählt außen für den Sub-Flow-Knoten coding
+    const idOf = (step) => step == null ? null : ids.includes(step) ? step : ids.find((id) => step.startsWith(`${id}/`)) ?? null;
     const state = Object.fromEntries(ids.map((n) => [n, "idle"]));
     const count = Object.fromEntries(ids.map((n) => [n, 0]));
     const litEdges = new Set();
@@ -168,12 +170,12 @@ export function mountProjectMap(container, { onSelect } = {}) {
 
     for (const f of flows) {
       const steps = f.state?.steps ?? [];
-      const cur = f.currentStep && ids.includes(f.currentStep) ? f.currentStep : null;
+      const cur = idOf(f.currentStep);
       const ended = steps.filter((s) => s.endedAt != null);
-      for (const s of ended) mark(s.step, "done");
+      for (const s of ended) { const id = idOf(s.step); if (id) mark(id, "done"); }
       // Genommene Kanten leuchten (im Fokus); die Kante zum aktuellen Knoten kommt vom zuletzt beendeten Schritt
       if (focus) for (const k of Object.keys(f.state?.edgeCounts ?? {})) if (g.curves[k]) litEdges.add(k);
-      const prev = ended.at(-1)?.step;
+      const prev = idOf(ended.at(-1)?.step);
       if (f.status === "running" && cur) {
         count[cur]++; mark(cur, "active");
         const key = prev && g.curves[`${prev}>${cur}`] ? `${prev}>${cur}` : null;
@@ -189,14 +191,15 @@ export function mountProjectMap(container, { onSelect } = {}) {
       } else if ((f.status === "failed" || f.status === "blocked") && cur && (recent(f) || focus)) {
         count[cur]++; mark(cur, "failed");
       } else if (f.status === "succeeded" && focus) {
-        for (const s of steps) mark(s.step, "done");
+        for (const s of steps) { const id = idOf(s.step); if (id) mark(id, "done"); }
         for (const n of g.graph.nodes) if (n.kind === "gate" && state[n.id] === "idle" && ended.length) state[n.id] = "done";
       }
     }
     for (const id of ids) {
       g.nodes[id].material.color.copy(state[id] === "active" ? accent : state[id] === "done" ? done : state[id] === "gate" ? gate : state[id] === "failed" ? failed : idle);
       if (g.labels[id]) world.remove(g.labels[id]);
-      g.labels[id] = sprite([[id.toUpperCase(), "600 34px 'Space Grotesk', sans-serif", state[id] === "idle" ? dim : muted], ...(count[id] ? [[`${count[id]} ${count[id] === 1 ? "Flow" : "Flows"}`, "26px 'JetBrains Mono', monospace", dim]] : [])]);
+      const kind = g.graph.nodes.find((n) => n.id === id)?.kind;
+      g.labels[id] = sprite([[id.split("/").at(-1).toUpperCase(), "600 34px 'Space Grotesk', sans-serif", state[id] === "idle" ? dim : muted], ...(count[id] ? [[`${count[id]} ${count[id] === 1 ? "Flow" : "Flows"}`, "26px 'JetBrains Mono', monospace", dim]] : kind === "flow" ? [["Sub-Flow · Klick öffnet", "26px 'JetBrains Mono', monospace", dim]] : [])]);
       g.labels[id].position.copy(g.POS[id]).add(new THREE.Vector3(0, -0.95, 0)); world.add(g.labels[id]);
       // Speiche zum Master leuchtet, wenn die Station arbeitet oder wartet
       const spokeLit = state[id] === "active" || state[id] === "gate";

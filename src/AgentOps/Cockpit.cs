@@ -53,9 +53,10 @@ public static class Cockpit
             return Results.Ok(souls);
         });
 
-        api.MapPut("/projects/{name}/souls/{step}", async (string name, string step, SoulBody body, CancellationToken ct) =>
+        // Knoten eines Sub-Flows heißen coding/pr — die Soul liegt dann unter .agentops/souls/coding/pr.md
+        api.MapPut("/projects/{name}/souls/{**step}", async (string name, string step, SoulBody body, CancellationToken ct) =>
         {
-            if (!TryRepo(reposRoot, name, out var repo) || !FlowNodes(repo).Contains(step)) return Results.NotFound();
+            if (!TryRepo(reposRoot, name, out var repo) || !SafeStep.IsMatch(step) || !FlowNodes(repo).Contains(step)) return Results.NotFound();
             var text = (body.Text ?? "").Replace("\r\n", "\n").TrimEnd() + "\n";
             var path = SoulPath(repo, step);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -64,9 +65,9 @@ public static class Cockpit
             return Results.Ok(new { step, commit });
         });
 
-        api.MapDelete("/projects/{name}/souls/{step}", async (string name, string step, CancellationToken ct) =>
+        api.MapDelete("/projects/{name}/souls/{**step}", async (string name, string step, CancellationToken ct) =>
         {
-            if (!TryRepo(reposRoot, name, out var repo) || !FlowNodes(repo).Contains(step)) return Results.NotFound();
+            if (!TryRepo(reposRoot, name, out var repo) || !SafeStep.IsMatch(step) || !FlowNodes(repo).Contains(step)) return Results.NotFound();
             var path = SoulPath(repo, step);
             if (!File.Exists(path)) return Results.NoContent();
             File.Delete(path);
@@ -92,30 +93,79 @@ public static class Cockpit
             return Results.Ok(new { commit, flow, path });
         });
 
-        // Agenten des Projekts: die Einträge in flow.json — Modell, Effort, Tools je Knoten
-        api.MapGet("/projects/{name}/agents", async (PluginClient plugin, string name, CancellationToken ct) =>
-        {
-            if (!TryRepo(reposRoot, name, out _)) return Results.NotFound();
-            var flow = await LoadFlowAsync(plugin, name, ct);
-            if (flow is null) return Results.Problem("Plugin nicht erreichbar.", statusCode: StatusCodes.Status502BadGateway);
-            var agents = flow["agents"] as JsonObject ?? new JsonObject();
-            return Results.Ok(agents.ToDictionary(p => p.Key, p => AgentView(p.Value as JsonObject)));
-        });
-
-        // PUT setzt model, thinking und/oder tools eines Knotens; ein leerer Wert nimmt die Einstellung zurück (dann gilt die Vorlage).
-        // Das Plugin gleicht die Projekt-Agenten danach ab (sync), damit die Änderung nicht erst beim nächsten Lauf sichtbar wird.
-        api.MapPut("/projects/{name}/agents/{step}", async (PluginClient plugin, string name, string step, ModelBody body, CancellationToken ct) =>
+        // Sub-Flows: <repo>/.agentops/flows/<name>.json — vollständige Flows, die ein Agent des Haupt- oder eines anderen
+        // Sub-Flows mit "flow": "<name>" als einen Schritt ausführt. Gelesen roh (das Cockpit bearbeitet die Datei), geprüft vom Plugin.
+        api.MapGet("/projects/{name}/flows", (string name) =>
         {
             if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
+            var dir = Path.Combine(repo, ".agentops", "flows");
+            var used = WalkFlows(repo).SelectMany(w => (w.Flow["agents"] as JsonObject ?? new JsonObject())
+                .Where(p => p.Value is JsonObject a && a["flow"] is JsonValue)
+                .Select(p => new { Sub = ((JsonValue)((JsonObject)p.Value!)["flow"]!).GetValue<string>(), By = w.Prefix + p.Key }))
+                .GroupBy(x => x.Sub).ToDictionary(g => g.Key, g => g.Select(x => x.By).ToArray());
+            var files = Directory.Exists(dir) ? Directory.GetFiles(dir, "*.json").OrderBy(f => f).ToArray() : [];
+            var subs = files.Select(f => Path.GetFileNameWithoutExtension(f)).Where(n => SafeName.IsMatch(n)).Select(n => new
+            {
+                name = n,
+                flow = ReadFlowFile(SubflowPath(repo, n)),
+                usedBy = used.GetValueOrDefault(n, []),
+            });
+            return Results.Ok(subs);
+        });
+
+        api.MapPut("/projects/{name}/flows/{sub}", async (PluginClient plugin, string name, string sub, JsonObject body, CancellationToken ct) =>
+        {
+            if (!TryRepo(reposRoot, name, out var repo) || !SafeStep.IsMatch(sub) || sub.Contains('/')) return Results.NotFound();
+            body["repo"] = name; body["sub"] = true; body["name"] = sub;
+            var (flow, path, error) = await ValidateFlowAsync(plugin, body, ct);
+            if (flow is null) return Results.Problem("Plugin nicht erreichbar — der Sub-Flow wurde nicht geprüft und nicht gespeichert.", statusCode: StatusCodes.Status502BadGateway);
+            if (error is not null) return Results.BadRequest(new { error });
+            var commit = await WriteFlowFileAsync(repo, $".agentops/flows/{sub}.json", flow, $"Sub-Flow {sub}: im Cockpit bearbeitet", ct);
+            _ = await plugin.RelayAsync(HttpMethod.Post, $"/projects/{Uri.EscapeDataString(name)}/sync", new { }, ct);
+            return Results.Ok(new { name = sub, commit, flow, path });
+        });
+
+        api.MapDelete("/projects/{name}/flows/{sub}", async (string name, string sub, CancellationToken ct) =>
+        {
+            if (!TryRepo(reposRoot, name, out var repo) || !SafeStep.IsMatch(sub) || sub.Contains('/')) return Results.NotFound();
+            var users = WalkFlows(repo).SelectMany(w => (w.Flow["agents"] as JsonObject ?? new JsonObject()).Where(p => p.Value is JsonObject a && a["flow"] is JsonValue v && v.TryGetValue<string>(out var s) && s == sub).Select(p => w.Prefix + p.Key)).ToArray();
+            if (users.Length > 0) return Results.BadRequest(new { error = $"Sub-Flow {sub} wird noch benutzt von {string.Join(", ", users)}." });
+            var file = SubflowPath(repo, sub);
+            if (!File.Exists(file)) return Results.NoContent();
+            File.Delete(file);
+            var commit = await GitCommitAsync(repo, $".agentops/flows/{sub}.json", $"Sub-Flow {sub}: entfernt", ct);
+            return Results.Ok(new { name = sub, commit });
+        });
+
+        // Agenten des Projekts: alle Knoten aus Haupt- und Sub-Flows — Modell, Effort, Tools je Knoten (Sub-Flow-Knoten nur mit ihrem Verweis)
+        api.MapGet("/projects/{name}/agents", async (PluginClient plugin, string name, CancellationToken ct) =>
+        {
+            if (!TryRepo(reposRoot, name, out var repo)) return Results.NotFound();
+            var main = await LoadFlowAsync(plugin, name, ct);
+            if (main is null) return Results.Problem("Plugin nicht erreichbar.", statusCode: StatusCodes.Status502BadGateway);
+            var result = new Dictionary<string, object>();
+            foreach (var (prefix, flow, _) in WalkFlows(repo, main))
+                foreach (var p in flow["agents"] as JsonObject ?? new JsonObject())
+                    result[prefix + p.Key] = AgentView(p.Value as JsonObject);
+            return Results.Ok(result);
+        });
+
+        // PUT setzt model, thinking und/oder tools eines Knotens (auch coding/pr); ein leerer Wert nimmt die Einstellung zurück (dann gilt die Vorlage).
+        // Das Plugin gleicht die Projekt-Agenten danach ab (sync), damit die Änderung nicht erst beim nächsten Lauf sichtbar wird.
+        api.MapPut("/projects/{name}/agents/{**step}", async (PluginClient plugin, string name, string step, ModelBody body, CancellationToken ct) =>
+        {
+            if (!TryRepo(reposRoot, name, out var repo) || !SafeStep.IsMatch(step)) return Results.NotFound();
             if (body.Model is null && body.Thinking is null && body.Tools is null) return Results.BadRequest(new { error = "model, thinking oder tools fehlt" });
             var model = body.Model?.Trim(); var thinking = body.Thinking?.Trim();
             var tools = body.Tools?.Select(t => t.Trim()).Where(t => t != "").Distinct().ToArray();
             if (!string.IsNullOrEmpty(model) && !ModelId.IsMatch(model)) return Results.BadRequest(new { error = "model: anbieter/modell" });
             if (!string.IsNullOrEmpty(thinking) && !ThinkingLevels.Contains(thinking)) return Results.BadRequest(new { error = $"thinking: {string.Join(" | ", ThinkingLevels)}" });
             if (tools is not null && tools.Any(t => !ToolId.IsMatch(t))) return Results.BadRequest(new { error = "tools: Kennungen wie read, write, exec" });
-            var flow = await LoadFlowAsync(plugin, name, ct);
-            if (flow is null) return Results.Problem("Plugin nicht erreichbar.", statusCode: StatusCodes.Status502BadGateway);
-            if (flow["agents"] is not JsonObject agents || agents[step] is not JsonObject entry) return Results.NotFound(new { error = $"{step} ist kein Agent dieses Flows" });
+            var main = await LoadFlowAsync(plugin, name, ct);
+            if (main is null) return Results.Problem("Plugin nicht erreichbar.", statusCode: StatusCodes.Status502BadGateway);
+            var (flow, relPath, local, resolveError) = ResolveAgentFlow(repo, step, main);
+            if (flow is null) return Results.NotFound(new { error = resolveError });
+            if (flow["agents"] is not JsonObject agents || agents[local!] is not JsonObject entry) return Results.NotFound(new { error = $"{step} ist kein Agent dieses Flows" });
             var changes = new List<string>();
             if (model is not null) { if (model == "") { if (entry.Remove("model")) changes.Add("Modell → Vorlage"); } else { entry["model"] = model; changes.Add($"Modell {model}"); } }
             if (thinking is not null) { if (thinking == "") { if (entry.Remove("thinking")) changes.Add("Effort → Vorlage"); } else { entry["thinking"] = thinking; changes.Add($"Effort {thinking}"); } }
@@ -126,7 +176,7 @@ public static class Cockpit
                 else { entry["tools"] = new JsonArray(tools.Select(t => (JsonNode)t).ToArray()); if (entry["tools"]!.ToJsonString() != before) changes.Add($"Tools {string.Join("/", tools)}"); }
             }
             if (changes.Count == 0) return Results.Ok(new { step, view = AgentView(entry), commit = "unverändert" });
-            var commit = await WriteProjectFlowAsync(repo, flow, $"Agent {step}: {string.Join(", ", changes)} (im Cockpit gesetzt)", ct);
+            var commit = await WriteFlowFileAsync(repo, relPath!, flow, $"Agent {step}: {string.Join(", ", changes)} (im Cockpit gesetzt)", ct);
             _ = await plugin.RelayAsync(HttpMethod.Post, $"/projects/{Uri.EscapeDataString(name)}/sync", new { }, ct);
             return Results.Ok(new { step, view = AgentView(entry), commit });
         });
@@ -201,14 +251,14 @@ public static class Cockpit
                 foreach (var s in steps.EnumerateArray())
                     entries.Add(new(OpenClawState.StrOf(s, "step") ?? "?", (int)(OpenClawState.LongOf(s, "attempt") ?? 1), OpenClawState.StrOf(s, "runId") ?? "",
                         OpenClawState.LongOf(s, "startedAt"), OpenClawState.LongOf(s, "endedAt"), OpenClawState.StrOf(s, "outcome"), OpenClawState.StrOf(s, "verdict"),
-                        s.TryGetProperty("soulOverride", out var so) && so.ValueKind == JsonValueKind.True, OpenClawState.StrOf(s, "thinking"), OpenClawState.StrOf(s, "agent")));
+                        s.TryGetProperty("soulOverride", out var so) && so.ValueKind == JsonValueKind.True, OpenClawState.StrOf(s, "thinking"), OpenClawState.StrOf(s, "agent"), OpenClawState.StrOf(s, "kind"), OpenClawState.StrOf(s, "flow")));
             }
             else if (state.TryGetProperty("runs", out var runs) && runs.ValueKind == JsonValueKind.Object)
             {
                 // Ältere Flows ohne Lebenslauf: nur der letzte Versuch je Schritt ist bekannt
                 var attempts = OpenClawState.Obj(state, "attempts");
                 foreach (var pr in runs.EnumerateObject())
-                    entries.Add(new(pr.Name, (int)(OpenClawState.LongOf(attempts, pr.Name) ?? 1), pr.Value.GetString() ?? "", null, null, null, null, false, null, null));
+                    entries.Add(new(pr.Name, (int)(OpenClawState.LongOf(attempts, pr.Name) ?? 1), pr.Value.GetString() ?? "", null, null, null, null, false, null, null, null, null));
                 entries.Sort((a, b) => Array.IndexOf(Steps, a.Step).CompareTo(Array.IndexOf(Steps, b.Step)));
             }
 
@@ -229,7 +279,7 @@ public static class Cockpit
                     {
                         step = e.Step, attempt = e.Attempt, runId = e.RunId, startedAt = started, endedAt = ended,
                         durationMs = run?.ElapsedMs ?? (started is not null && ended is not null ? ended - started : null),
-                        outcome = e.Outcome ?? run?.Outcome, verdict = e.Verdict, soulOverride = e.SoulOverride, thinking = e.Thinking, agent = agentId,
+                        outcome = e.Outcome ?? run?.Outcome, verdict = e.Verdict, soulOverride = e.SoulOverride, thinking = e.Thinking, agent = e.Kind == "flow" ? null : agentId, kind = e.Kind, flow = e.Flow,
                         prompt = run?.Task, answer = run?.ResultText,
                         model = usage?.Model,
                         tokens = usage is null ? null : new { input = usage.Input, output = usage.Output, cacheRead = usage.CacheRead, cacheWrite = usage.CacheWrite, total = usage.Total },
@@ -260,32 +310,79 @@ public static class Cockpit
     public sealed record RunBody(string? Goal);
     public sealed record GateBody(string? Decision, string? By);
     public sealed record ModelBody(string? Model, string? Thinking, string[]? Tools);
-    private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride, string? Thinking, string? Agent);
+    private sealed record StepEntry(string Step, int Attempt, string RunId, long? StartedAt, long? EndedAt, string? Outcome, string? Verdict, bool SoulOverride, string? Thinking, string? Agent, string? Kind, string? Flow);
 
     private static string SoulPath(string repo, string step) => Path.Combine(repo, ".agentops", "souls", $"{step}.md");
     private static string FlowPath(string repo) => Path.Combine(repo, ".agentops", "flow.json");
+    private static string SubflowPath(string repo, string sub) => Path.Combine(repo, ".agentops", "flows", $"{sub}.json");
     private static string LegacyAgentsPath(string repo) => Path.Combine(repo, ".agentops", "agents.json");
+    // Ein Knoten: master, plan, coding/pr, … — bis zu drei Ebenen Sub-Flow
+    private static readonly Regex SafeStep = new("^[a-z][a-z0-9_-]{0,30}(/[a-z][a-z0-9_-]{0,30}){0,3}$", RegexOptions.Compiled);
+
+    private static JsonObject? ReadFlowFile(string path)
+    {
+        if (!File.Exists(path)) return null;
+        try { return JsonNode.Parse(File.ReadAllText(path)) as JsonObject; }
+        catch (JsonException) { return null; }
+    }
+
+    private static JsonObject DefaultFlowObject() =>
+        new() { ["agents"] = new JsonObject(Steps.Select(s => KeyValuePair.Create<string, JsonNode?>(s, new JsonObject()))), ["gates"] = new JsonArray("gate") };
+
+    /// <summary>Haupt- und Sub-Flows eines Projekts mit ihrem Präfix ("", "coding/", …) — Sub-Flow-Verweise werden bis zu drei Ebenen tief verfolgt.</summary>
+    private static IEnumerable<(string Prefix, JsonObject Flow, string RelPath)> WalkFlows(string repo, JsonObject? main = null)
+    {
+        var root = main ?? ReadFlowFile(FlowPath(repo)) ?? DefaultFlowObject();
+        var queue = new Queue<(string, JsonObject, string, int)>();
+        queue.Enqueue(("", root, ".agentops/flow.json", 0));
+        var seen = new HashSet<string>();
+        while (queue.Count > 0)
+        {
+            var (prefix, flow, rel, depth) = queue.Dequeue();
+            yield return (prefix, flow, rel);
+            if (depth >= 3 || flow["agents"] is not JsonObject agents) continue;
+            foreach (var p in agents)
+            {
+                if (p.Value is not JsonObject a || a["flow"] is not JsonValue fv || !fv.TryGetValue<string>(out var sub) || !SafeName.IsMatch(sub) || !seen.Add(prefix + p.Key)) continue;
+                var subFlow = ReadFlowFile(SubflowPath(repo, sub));
+                if (subFlow is not null) queue.Enqueue(($"{prefix}{p.Key}/", subFlow, $".agentops/flows/{sub}.json", depth + 1));
+            }
+        }
+    }
+
+    /// <summary>Den Flow (Datei) finden, in dem ein Knoten wie coding/pr steht — für Änderungen an Modell, Effort, Tools.</summary>
+    private static (JsonObject? Flow, string? RelPath, string? Local, string? Error) ResolveAgentFlow(string repo, string step, JsonObject main)
+    {
+        var parts = step.Split('/');
+        var flow = main; var rel = ".agentops/flow.json";
+        for (var i = 0; i < parts.Length - 1; i++)
+        {
+            if (flow["agents"] is not JsonObject ag || ag[parts[i]] is not JsonObject a || a["flow"] is not JsonValue fv || !fv.TryGetValue<string>(out var sub) || !SafeName.IsMatch(sub))
+                return (null, null, null, $"{string.Join("/", parts.Take(i + 1))} ist kein Sub-Flow");
+            var subFlow = ReadFlowFile(SubflowPath(repo, sub));
+            if (subFlow is null) return (null, null, null, $"Sub-Flow {sub} fehlt oder ist kein gültiges JSON");
+            flow = subFlow; rel = $".agentops/flows/{sub}.json";
+        }
+        return (flow, rel, parts[^1], null);
+    }
     private static readonly Regex ModelId = new(@"^[a-z0-9][a-z0-9_-]{0,40}/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$", RegexOptions.Compiled);
     private static readonly Regex ToolId = new("^[a-z0-9_:-]{1,60}$", RegexOptions.Compiled);
 
     // OpenClaws Thinking-Level, im Cockpit "Effort"
     public static readonly string[] ThinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
 
-    /// <summary>Die Knoten (Agenten) des Projekt-Flows — aus flow.json, sonst die fünf Schritte des Standard-Flows.</summary>
+    /// <summary>Die Agenten-Knoten des Projekts mit Präfix (plan, coding/pr, …) — aus Haupt- und Sub-Flows; ohne flow.json die fünf Schritte des Standard-Flows.</summary>
     private static string[] FlowNodes(string repo)
     {
-        var path = FlowPath(repo);
-        if (!File.Exists(path)) return Steps;
-        try
+        var ids = new List<string>();
+        foreach (var (prefix, flow, _) in WalkFlows(repo))
         {
-            var flow = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
-            var agents = flow?["agents"] as JsonObject;
-            var ids = agents?.Select(p => p.Key).Where(k => Regex.IsMatch(k, "^[a-z][a-z0-9_-]{0,30}$")).ToList() ?? [];
-            // Im Master-Modus ist der Master ein Knoten mit eigener Soul, auch wenn flow.json ihn nicht aufführt
-            if (flow?["mode"] is JsonValue m && m.TryGetValue<string>(out var mode) && mode == "master" && !ids.Contains("master")) ids.Insert(0, "master");
-            return ids.Count > 0 ? [.. ids] : Steps;
+            // Im Master-Modus ist der Master ein Knoten mit eigener Soul, auch wenn die Datei ihn nicht aufführt
+            if (flow["mode"] is JsonValue m && m.TryGetValue<string>(out var mode) && mode == "master" && !((flow["agents"] as JsonObject)?.ContainsKey("master") ?? false)) ids.Add(prefix + "master");
+            foreach (var p in flow["agents"] as JsonObject ?? new JsonObject())
+                if (Regex.IsMatch(p.Key, "^[a-z][a-z0-9_-]{0,30}$") && !(p.Value is JsonObject a && a["flow"] is JsonValue)) ids.Add(prefix + p.Key);
         }
-        catch (JsonException) { return Steps; }
+        return ids.Count > 0 ? [.. ids] : Steps;
     }
 
     /// <summary>Soul für einen Knoten ohne Vorlage — dieselbe knappe Fassung, die das Plugin in den Workspace schreibt.</summary>
@@ -297,6 +394,7 @@ public static class Cockpit
         model = entry?["model"] is JsonValue m && m.TryGetValue<string>(out var ms) ? ms : null,
         thinking = entry?["thinking"] is JsonValue t && t.TryGetValue<string>(out var ts) ? ts : null,
         tools = entry?["tools"] is JsonArray a ? a.Select(x => x is JsonValue v && v.TryGetValue<string>(out var s) ? s : null).Where(s => s is not null).Select(s => s!).ToArray() : null,
+        flow = entry?["flow"] is JsonValue f && f.TryGetValue<string>(out var fs) ? fs : null,
     };
 
     /// <summary>Der geprüfte Flow des Projekts vom Plugin (flow.json mit Altbestand, sonst Standard) — als bearbeitbares JsonObject.</summary>
@@ -318,14 +416,18 @@ public static class Cockpit
     }
 
     /// <summary>flow.json schreiben und committen; ein altes agents.json ist damit hineingefaltet und verschwindet im selben Commit.</summary>
-    private static async Task<string> WriteProjectFlowAsync(string repo, JsonObject flow, string message, CancellationToken ct)
+    private static Task<string> WriteProjectFlowAsync(string repo, JsonObject flow, string message, CancellationToken ct) =>
+        WriteFlowFileAsync(repo, ".agentops/flow.json", flow, message, ct);
+
+    /// <summary>Eine Flow-Datei (Hauptflow oder .agentops/flows/&lt;name&gt;.json) schreiben und committen.</summary>
+    private static async Task<string> WriteFlowFileAsync(string repo, string relPath, JsonObject flow, string message, CancellationToken ct)
     {
-        var path = FlowPath(repo);
+        var path = Path.Combine(repo, relPath);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await File.WriteAllTextAsync(path, flow.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n", ct);
-        var paths = new List<string> { ".agentops/flow.json" };
+        var paths = new List<string> { relPath };
         // git add scheitert an einem Pfad, den es nie gab — das alte agents.json nur mitnehmen, wenn es da war
-        if (File.Exists(LegacyAgentsPath(repo))) { File.Delete(LegacyAgentsPath(repo)); paths.Add(".agentops/agents.json"); }
+        if (relPath == ".agentops/flow.json" && File.Exists(LegacyAgentsPath(repo))) { File.Delete(LegacyAgentsPath(repo)); paths.Add(".agentops/agents.json"); }
         return await GitCommitAsync(repo, [.. paths], message, ct);
     }
 

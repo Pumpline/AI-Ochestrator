@@ -4,6 +4,9 @@
 // Knoten zum nächsten — Standardkanten immer, Verzweigungen nur bei einem Urteil in der letzten Zeile der
 // Übergabedatei (z.B. REQUEST_CHANGES → zurück zu code, höchstens max-mal). Der Graph steht in
 // <repo>/.agentops/flow.json; fehlt die Datei, gilt der Standard-Flow plan → code → test → review → Gate → ship.
+// Im Master-Modus entscheidet statt der Kanten ein Master-Agent, welcher Agent als nächstes dran ist.
+// Ein Agent kann selbst ein Flow sein (Sub-Flow, <repo>/.agentops/flows/<name>.json): dann läuft dieser Flow als ein
+// Schritt des äußeren, im Code erzwungen, und sein letztes Urteil ist das Urteil des Knotens nach außen.
 // Jeder Schritt ist ein Subagent-Lauf eines Projekt-Agenten mit eigener Soul und minimalem Kontext; die Übergabe
 // zwischen den Schritten läuft über Dateien in .agentops/ im Repo, nicht über ein Modell in der Mitte.
 // Der Flow ist ein managed TaskFlow — OpenClaw schreibt ihn nach flow_runs, der Connector liest ihn.
@@ -23,6 +26,7 @@ const ROUTE = "/plugins/agentops-pipeline";
 const TEMPLATE_STEPS = ["master", "plan", "code", "test", "review", "ship"];   // die Vorlagen-Agenten <prefix><step>
 const MASTER = "master";                 // der Knoten, der im Master-Modus entscheidet
 const MASTER_MAX_STEPS = 8;              // Entscheidungen je Flow, wenn flow.json nichts sagt
+const MAX_DEPTH = 3;                     // Sub-Flows in Sub-Flows — so tief, nicht tiefer
 const MODEL_ID = /^[a-z0-9][a-z0-9_-]{0,40}\/[A-Za-z0-9][A-Za-z0-9._:-]{0,80}$/;   // provider/model
 // OpenClaws Thinking-Level ("Effort") — je Agent als thinkingDefault
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"];
@@ -33,8 +37,10 @@ const END_NODES = ["done", "halt"];   // Pseudo-Ziele: Flow beenden / Flow schei
 // Agenten sind projekt-scoped: jedes Projekt bekommt seine eigenen Agenten (agents.entries.<prefix><projekt>-<knoten>),
 // angelegt vom Plugin beim ersten Lauf, danach mit Modell, Effort und Tools aus flow.json synchron gehalten.
 // Die globalen Schritt-Agenten (<prefix><step>) sind die Vorlagen: ihre Werte gelten, wo das Projekt nichts sagt.
+// Knoten eines Sub-Flows heißen <subflow-knoten>/<knoten> (z.B. coding/pr) — als Agent pipeline-<projekt>-coding-pr.
 const slug = (name) => String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "projekt";
-const projectAgentId = (prefix, repo, node) => `${prefix}${slug(repo)}-${node}`;
+const projectAgentId = (prefix, repo, node) => `${prefix}${slug(repo)}-${node.replace(/\//g, "-")}`;
+const localOf = (node) => node.split("/").pop();   // der Name innerhalb seines Flows
 
 // ---------- Flow-Definition ----------
 
@@ -55,7 +61,7 @@ function defaultFlow() {
 // Eine Definition in ihre feste Form bringen: gültige Knoten, Kanten als {from, to, on, max}, Start, Modus.
 // Modus "graph" (Stufe 1): die Kanten führen. Modus "master" (Stufe 2): der Master wählt aus den Agenten, bis er
 // "done" sagt; Pflicht-Agenten (required) laufen vorher automatisch nach, dann das Gate, dann die Agenten
-// "nach dem Gate" (after: "gate") in ihrer Reihenfolge.
+// "nach dem Gate" (after: "gate") in ihrer Reihenfolge. Ein Agent mit "flow" ist ein Sub-Flow (Stufe 3).
 function normalizeFlow(def) {
   const mode = def?.mode === "master" ? "master" : "graph";
   const agents = {};
@@ -69,6 +75,7 @@ function normalizeFlow(def) {
       ...(typeof c.description === "string" && c.description.trim() ? { description: c.description.trim().slice(0, 200) } : {}),
       ...(c.required === true ? { required: true } : {}),
       ...(c.after === "gate" ? { after: "gate" } : {}),
+      ...(typeof c.flow === "string" && NODE_ID.test(c.flow) ? { flow: c.flow } : {}),
     };
   }
   if (mode === "master" && !agents[MASTER]) agents[MASTER] = {};
@@ -94,11 +101,12 @@ const poolAgents = (flow) => Object.entries(flow.agents).filter(([id, a]) => id 
 const requiredAgents = (flow) => poolAgents(flow).filter((id) => flow.agents[id].required);
 const tailAgents = (flow) => Object.entries(flow.agents).filter(([id, a]) => id !== MASTER && a.after === "gate").map(([id]) => id);
 
-// Prüfung: Knoten bekannt, Start vorhanden, der Hauptweg (Standardkanten ab Start) erreicht ein Gate vor dem Ende
-function validateFlow(flow) {
+// Prüfung: Knoten bekannt, Start vorhanden, der Hauptweg (Standardkanten ab Start) erreicht ein Gate vor dem Ende.
+// Ein Sub-Flow braucht kein Gate — das Gate des äußeren Flows genügt.
+function validateFlow(flow, { sub = false } = {}) {
   if (flow.mode === "master") {
     if (!poolAgents(flow).length) return "Der Master braucht mindestens einen Agenten, den er aufrufen kann.";
-    if (!flow.gates.length) return "Kein Gate — vor dem Ende muss ein Mensch freigeben.";
+    if (!sub && !flow.gates.length) return "Kein Gate — vor dem Ende muss ein Mensch freigeben.";
     return null;
   }
   if (!flow.start) return "Der Flow hat keinen Agenten.";
@@ -119,17 +127,17 @@ function validateFlow(flow) {
     cur = flow.edges.find((e) => e.from === cur && !e.on)?.to ?? "done";
   }
   if (cur === "halt") return "Der Hauptweg endet in halt.";
-  if (!gated) return "Kein Gate auf dem Hauptweg — vor dem Ende muss ein Mensch freigeben.";
+  if (!sub && !gated) return "Kein Gate auf dem Hauptweg — vor dem Ende muss ein Mensch freigeben.";
   return null;
 }
 
 // Der Hauptweg: Knoten in Reihenfolge der Standardkanten ab Start, danach die nur über Verzweigungen erreichbaren.
 // Im Master-Modus: Master, dann der Pool in Definitionsreihenfolge (gelaufene zuerst, wenn ein Zustand bekannt ist),
 // dann die Gates, dann die Agenten nach dem Gate.
-function flowPath(flow, state = null) {
+function flowPath(flow, state = null, prefix = "") {
   if (flow.mode === "master") {
     const tail = tailAgents(flow);
-    const ran = []; for (const s of state?.steps ?? []) if (s.step !== MASTER && flow.agents[s.step] && !tail.includes(s.step) && !ran.includes(s.step)) ran.push(s.step);
+    const ran = []; for (const s of state?.steps ?? []) { const l = s.step.startsWith(prefix) && !s.step.slice(prefix.length).includes("/") ? s.step.slice(prefix.length) : null; if (l && l !== MASTER && flow.agents[l] && !tail.includes(l) && !ran.includes(l)) ran.push(l); }
     const rest = poolAgents(flow).filter((id) => !ran.includes(id));
     return [MASTER, ...ran, ...rest, ...flow.gates, ...tail];
   }
@@ -151,24 +159,58 @@ function legacyAgents(cwd) {
   }
 }
 
-// Die Flow-Definition eines Projekts von der Platte: flow.json, sonst der Standard-Flow
+function readJsonFile(file) {
+  const parsed = JSON.parse(readFileSync(file, "utf8"));
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+}
+
+// Ein Sub-Flow von der Platte: <repo>/.agentops/flows/<name>.json
+function loadSubflow(cwd, name) {
+  const file = path.join(cwd, ".agentops", "flows", `${name}.json`);
+  if (!NODE_ID.test(name) || !existsSync(file)) return { flow: null, error: `Sub-Flow ${name}: Datei .agentops/flows/${name}.json fehlt.` };
+  try {
+    const flow = normalizeFlow(readJsonFile(file) ?? {});
+    return { flow, error: validateFlow(flow, { sub: true }) };
+  } catch (error) {
+    return { flow: null, error: `Sub-Flow ${name}: kein gültiges JSON (${error?.message ?? error}).` };
+  }
+}
+
+// Sub-Flow-Verweise prüfen: Datei da, gültig, keine Zyklen, nicht tiefer als MAX_DEPTH. Liefert alle Sub-Flows (Name → Definition).
+function checkSubflows(cwd, flow, chain = [], out = {}) {
+  for (const [id, a] of Object.entries(flow.agents)) {
+    if (!a.flow) continue;
+    if (chain.includes(a.flow)) return { error: `Sub-Flow ${a.flow} ruft sich selbst (${[...chain, a.flow].join(" → ")}).`, subflows: out };
+    if (chain.length + 1 >= MAX_DEPTH) return { error: `Sub-Flow ${a.flow} in ${id}: tiefer als ${MAX_DEPTH} Ebenen geht nicht.`, subflows: out };
+    const { flow: sub, error } = loadSubflow(cwd, a.flow);
+    if (error) return { error, subflows: out };
+    out[a.flow] = sub;
+    const deeper = checkSubflows(cwd, sub, [...chain, a.flow], out);
+    if (deeper.error) return deeper;
+  }
+  return { error: null, subflows: out };
+}
+
+// Die Flow-Definition eines Projekts von der Platte: flow.json, sonst der Standard-Flow — samt Sub-Flows
 function loadFlow(cwd) {
   let def = null; let source = "default";
   const file = path.join(cwd, ".agentops", "flow.json");
   try {
-    if (existsSync(file)) { def = JSON.parse(readFileSync(file, "utf8")); source = "flow.json"; }
+    if (existsSync(file)) { def = readJsonFile(file); source = "flow.json"; }
   } catch (error) {
-    return { flow: normalizeFlow(defaultFlow()), source: "default", error: `flow.json ist kein gültiges JSON: ${error?.message ?? error}` };
+    return { flow: normalizeFlow(defaultFlow()), source: "default", subflows: {}, error: `flow.json ist kein gültiges JSON: ${error?.message ?? error}` };
   }
-  const flow = normalizeFlow(def && typeof def === "object" && !Array.isArray(def) ? def : defaultFlow());
+  const flow = normalizeFlow(def ?? defaultFlow());
   for (const [id, cfg] of Object.entries(legacyAgents(cwd))) if (flow.agents[id] && cfg && typeof cfg === "object") flow.agents[id] = { ...normalizeFlow({ agents: { [id]: cfg } }).agents[id], ...flow.agents[id] };
-  return { flow, source, error: validateFlow(flow) };
+  const own = validateFlow(flow);
+  const subs = checkSubflows(cwd, flow);
+  return { flow, source, subflows: subs.subflows, error: own ?? subs.error };
 }
 
 // Nach einem Schritt: welche Kante? Erst eine Verzweigung, deren Urteil in der letzten Zeile steht und deren
 // Obergrenze noch nicht erreicht ist, sonst die Standardkante, sonst das Ende.
-function nextEdge(flow, state, node, line) {
-  const counts = state.edgeCounts ?? {};
+function nextEdge(flow, ctx, node, line) {
+  const counts = ctx.edgeCounts ?? {};
   const matching = flow.edges.filter((e) => e.from === node && e.on && line.includes(e.on));
   const branch = matching.find((e) => e.max == null || (counts[`${e.from}>${e.to}`] ?? 0) < e.max);
   const edge = branch ?? flow.edges.find((e) => e.from === node && !e.on) ?? { from: node, to: "done", on: null, max: null };
@@ -217,50 +259,56 @@ async function readJson(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-function buildMessage(state, node, attempt = 1) {
-  const pathNodes = state.path ?? Object.keys(state.flow?.agents ?? {});
+// Die Aufgabe an einen Schritt-Agenten. prefix ist "" im Hauptflow, "coding/" in einem Sub-Flow — die Notizen liegen dort.
+function buildMessage(state, ctx, prefix, node, attempt = 1) {
+  const pathNodes = ctx.path ?? Object.keys(ctx.flow?.agents ?? {});
   const i = pathNodes.indexOf(node);
+  const dir = `.agentops/${prefix}`;
   return [
     `Goal: ${state.goal}`,
     `Repository (working directory): ${state.cwd}`,
-    `Pipeline step: ${node}${i >= 0 ? ` (${i + 1}/${pathNodes.length})` : ""}. Pipeline: ${pathNodes.join(" → ")}. Notes of earlier steps are in .agentops/.`,
-    `Write your notes to .agentops/${node}.md; if this step gives a verdict, put it in the last line.`,
-    attempt > 1 ? `Attempt ${attempt} of this step — earlier notes and findings are in .agentops/.` : null,
+    prefix ? `You work inside the sub-pipeline "${prefix.slice(0, -1)}" of a larger pipeline; the notes of the outer pipeline are in .agentops/.` : null,
+    `Pipeline step: ${node}${i >= 0 ? ` (${i + 1}/${pathNodes.length})` : ""}. Pipeline: ${pathNodes.join(" → ")}. Notes of earlier steps are in ${dir}.`,
+    `Write your notes to ${dir}${node}.md; if this step gives a verdict, put it in the last line.`,
+    attempt > 1 ? `Attempt ${attempt} of this step — earlier notes and findings are in ${dir}.` : null,
     `Work only inside the repository. When you are done, stop.`,
   ].filter(Boolean).join("\n");
 }
 
 // Was ein Agent tut — für die Liste, aus der der Master wählt: description aus flow.json, sonst die erste Textzeile seiner Soul
-function describeAgent(cwd, templateWorkspace, id, cfg) {
+function describeAgent(cwd, templateWorkspace, node, cfg, subflows) {
   if (cfg?.description) return cfg.description;
-  for (const file of [path.join(cwd, ".agentops", "souls", `${id}.md`), templateWorkspace ? path.join(templateWorkspace, "SOUL.md") : null]) {
+  if (cfg?.flow) { const sub = subflows?.[cfg.flow]; return `a sub-pipeline (${sub ? flowPath(sub).join(" → ") : cfg.flow}) that runs as one step`; }
+  for (const file of [path.join(cwd, ".agentops", "souls", `${node}.md`), templateWorkspace ? path.join(templateWorkspace, "SOUL.md") : null]) {
     try {
       if (!file || !existsSync(file)) continue;
       const line = readFileSync(file, "utf8").split(/\r?\n/).map((l) => l.trim()).find((l) => l && !l.startsWith("#") && !l.startsWith("_"));
       if (line) return line.slice(0, 200);
     } catch {}
   }
-  return `the ${id} agent`;
+  return `the ${localOf(node)} agent`;
 }
 
-// Die Frage an den Master: Ziel, die Agenten mit Beschreibung und Verlauf, die Regeln — Antwort ist die letzte Zeile von .agentops/master.md
-function buildMasterMessage(state, flow, descriptions) {
-  const steps = (state.steps ?? []).filter((s) => s.step !== MASTER && s.endedAt != null);
-  const used = (state.master?.decisions ?? []).length;
+// Die Frage an den Master: Ziel, die Agenten mit Beschreibung und Verlauf, die Regeln — Antwort ist die letzte Zeile von master.md
+function buildMasterMessage(state, ctx, prefix, flow, descriptions) {
+  const dir = `.agentops/${prefix}`;
+  const steps = (state.steps ?? []).filter((s) => s.step.startsWith(prefix) && !s.step.slice(prefix.length).includes("/") && localOf(s.step) !== MASTER && s.endedAt != null);
+  const used = (ctx.master?.decisions ?? []).length;
   const pool = poolAgents(flow); const required = requiredAgents(flow); const tail = tailAgents(flow);
   const lines = pool.map((id) => {
-    const runs = steps.filter((s) => s.step === id);
+    const runs = steps.filter((s) => localOf(s.step) === id);
     const last = runs.at(-1);
-    return `- ${id}: ${descriptions[id] ?? id}${required.includes(id) ? " [required before the gate]" : ""}${runs.length ? ` — ran ${runs.length}×${last?.verdict ? `, last verdict: ${last.verdict}` : ""} (notes in .agentops/${id}.md)` : " — not run yet"}`;
+    return `- ${id}: ${descriptions[id] ?? id}${required.includes(id) ? " [required before the gate]" : ""}${runs.length ? ` — ran ${runs.length}×${last?.verdict ? `, last verdict: ${last.verdict}` : ""} (notes in ${dir}${id}.md)` : " — not run yet"}`;
   });
   return [
     `Goal: ${state.goal}`,
     `Repository (working directory): ${state.cwd}`,
-    `You are the master of this pipeline: you decide which agent works next. Agents you can call:`,
+    prefix ? `You are the master of the sub-pipeline "${prefix.slice(0, -1)}" inside a larger pipeline; the notes of the outer pipeline are in .agentops/.` : `You are the master of this pipeline: you decide which agent works next.`,
+    `Agents you can call:`,
     ...lines,
-    `Sequence so far: ${steps.length ? steps.map((s) => s.step).join(" → ") : "nothing has run yet"}.`,
-    `Rules: call an agent when its work is needed for the goal; agents may run more than once. Required agents you do not call will run automatically before the human gate. ${tail.length ? `After the gate the pipeline runs ${tail.join(", ")} on its own. ` : ""}You have ${flow.master.maxSteps - used} decision${flow.master.maxSteps - used === 1 ? "" : "s"} left; when the goal is done and verified, say done.`,
-    `Read the notes in .agentops/ before deciding. Write 2–5 lines of reasoning to .agentops/master.md and end that file with exactly one line: NEXT: <agent> or NEXT: done`,
+    `Sequence so far: ${steps.length ? steps.map((s) => localOf(s.step)).join(" → ") : "nothing has run yet"}.`,
+    `Rules: call an agent when its work is needed for the goal; agents may run more than once. Required agents you do not call will run automatically${flow.gates.length ? " before the human gate" : " at the end"}. ${tail.length ? `After the gate the pipeline runs ${tail.join(", ")} on its own. ` : ""}You have ${flow.master.maxSteps - used} decision${flow.master.maxSteps - used === 1 ? "" : "s"} left; when the goal is done and verified, say done.`,
+    `Read the notes in ${dir} before deciding. Write 2–5 lines of reasoning to ${dir}master.md and end that file with exactly one line: NEXT: <agent> or NEXT: done`,
     `Do not change any other file. When you are done, stop.`,
   ].join("\n");
 }
@@ -274,7 +322,7 @@ function modelOf(entry, defaults) {
 export default definePluginEntry({
   id: CONTROLLER_ID,
   name: "Agent-Ops Pipeline",
-  description: "Deterministische Pipeline als Graph je Projekt (Agenten, Kanten, Gates) als managed TaskFlow.",
+  description: "Deterministische Pipeline als Graph je Projekt (Agenten, Kanten, Gates, Sub-Flows, Master) als managed TaskFlow.",
   register(api) {
     const cfg = api.pluginConfig ?? {};
     const ownerSessionKey = cfg.ownerSessionKey ?? "agent:main:main";
@@ -302,7 +350,7 @@ export default definePluginEntry({
         if (f.status !== "running" || !f.currentStep) continue;
         const step = f.currentStep;
         const expectedRun = f.stateJson?.runs?.[step];
-        const open = [...(f.stateJson?.steps ?? [])].reverse().find((s) => s.step === step && s.endedAt == null);
+        const open = [...(f.stateJson?.steps ?? [])].reverse().find((s) => s.step === step && s.endedAt == null && s.kind !== "flow");
         if ((event.runId && expectedRun === event.runId) || (event.targetSessionKey && open && event.targetSessionKey === open.sessionKey)) {
           return { flowId: f.flowId, step };
         }
@@ -331,7 +379,22 @@ export default definePluginEntry({
     });
 
     const mine = () => flows.list().filter((f) => f.controllerId === CONTROLLER_ID);
-    const flowOf = (state) => state.flow ?? normalizeFlow(defaultFlow());   // ältere Flows kennen nur den Standard
+
+    // ---------- Rahmen: der Flow, in dem gerade gearbeitet wird ----------
+    // Der Hauptflow lebt direkt im Zustand (flow, path, edgeCounts, loops, master, lastVerdict, lastUnresolved);
+    // jeder Sub-Flow ist ein Rahmen auf stateJson.stack mit denselben Feldern plus node (sein Knoten außen) und prefix.
+    const frameOf = (state) => state.stack?.length ? state.stack.at(-1) : null;
+    const ctxOf = (state) => frameOf(state) ?? state;
+    const prefixOf = (state) => frameOf(state)?.prefix ?? "";
+    const flowOf = (state) => ctxOf(state).flow ?? normalizeFlow(defaultFlow());   // ältere Flows kennen nur den Standard
+    // Zustand fortschreiben: root-Felder (steps, gate, …) am Wurzelzustand, ctx-Felder im innersten Rahmen
+    function apply(state, root = {}, ctx = {}) {
+      const frame = frameOf(state);
+      if (!frame) return { ...state, ...root, ...ctx };
+      const stack = [...state.stack]; stack[stack.length - 1] = { ...frame, ...ctx };
+      return { ...state, ...root, stack };
+    }
+    const subflowOf = (state, name) => state.subflows?.[name] ?? null;
 
     // OpenClaws CLI im selben Container: config get/set schreiben validiert und lösen den Hot-Reload aus.
     async function cli(...args) {
@@ -444,14 +507,16 @@ export default definePluginEntry({
       return groups;
     }
 
-    // Die Agenten eines Projekts anlegen und mit Vorlage + flow.json abgleichen. Liefert knoten → agentId.
-    // Wird vor jedem Schritt aufgerufen; ohne Änderung ist es ein config get (~1 s), sonst ein Patch mit Hot-Reload.
-    async function ensureProjectAgents(repo, cwd, flow) {
+    // Die Agenten eines Flows anlegen und mit Vorlage + Definition abgleichen. prefix = "" (Hauptflow) oder "coding/".
+    // Liefert knoten → agentId. Sub-Flow-Knoten selbst sind keine Agenten. Wird vor jedem Schritt aufgerufen;
+    // ohne Änderung ist es ein config get (~1 s), sonst ein Patch mit Hot-Reload.
+    async function ensureProjectAgents(repo, cwd, flow, prefix = "") {
       const agents = JSON.parse(await cli("config", "get", "agents"));
       const entries = agents.entries ?? {};
       const patch = {}; const creations = []; const ids = {}; const resolved = {};
       for (const [node, pa] of Object.entries(flow.agents)) {
-        const id = projectAgentId(agentPrefix, repo, node); ids[node] = id;
+        if (pa.flow) continue;
+        const id = projectAgentId(agentPrefix, repo, prefix + node); ids[node] = id;
         const template = entries[`${agentPrefix}${node}`] ?? null;   // nur die bekannten Schritte haben eine Vorlage
         const model = pa.model ?? modelOf(template ?? {}, agents.defaults);
         const thinking = pa.thinking ?? template?.thinkingDefault ?? null;
@@ -475,9 +540,9 @@ export default definePluginEntry({
       }
       if (Object.keys(patch).length) {
         await configPatch({ agents: { entries: patch } });
-        log.info?.(`[pipeline] agents of ${repo} updated: ${Object.entries(patch).map(([id, d]) => `${id} ${Object.keys(d).join("+")}`).join(", ")}`);
+        log.info?.(`[pipeline] agents of ${repo}${prefix ? ` (${prefix.slice(0, -1)})` : ""} updated: ${Object.entries(patch).map(([id, d]) => `${id} ${Object.keys(d).join("+")}`).join(", ")}`);
       }
-      // Die Soul der Vorlage ist die Soul des Projekt-Agenten; ohne Vorlage eine knappe Standard-Soul (nur wenn keine da ist).
+      // Die Soul der Vorlage ist die Soul des Projekt-Agenten; ohne Vorlage eine knappe Standard-Soul.
       // Die Projekt-Soul (.agentops/souls/<knoten>.md) kommt in beiden Fällen als extraSystemPrompt obendrauf.
       for (const [node, r] of Object.entries(resolved)) {
         try {
@@ -486,10 +551,24 @@ export default definePluginEntry({
           const src = r.templateWorkspace ? path.join(r.templateWorkspace, "SOUL.md") : null;
           if (src && existsSync(src)) copyFileSync(src, dst);
           // agents add legt OpenClaws eigene Bootstrap-Soul ab ("Who You Are") — die ersetzt die knappe Pipeline-Soul, nichts anderes
-          else if (!existsSync(dst) || !readFileSync(dst, "utf8").startsWith("# SOUL — ")) writeFileSync(dst, genericSoul(node));
-        } catch (error) { log.warn?.(`[pipeline] soul sync ${node}: ${error?.message ?? error}`); }
+          else if (!existsSync(dst) || !readFileSync(dst, "utf8").startsWith("# SOUL — ")) writeFileSync(dst, genericSoul(prefix + node));
+        } catch (error) { log.warn?.(`[pipeline] soul sync ${prefix}${node}: ${error?.message ?? error}`); }
       }
       return { ids, resolved };
+    }
+
+    // Alle Agenten eines Projekts: Hauptflow und jeder Sub-Flow
+    async function ensureAllAgents(repo, cwd, flow, subflows) {
+      const out = [];
+      const walk = async (f, prefix) => {
+        const { ids, resolved } = await ensureProjectAgents(repo, cwd, f, prefix);
+        for (const node of Object.keys(f.agents)) {
+          if (f.agents[node].flow) { out.push({ step: prefix + node, id: null, flow: f.agents[node].flow }); const sub = subflows[f.agents[node].flow]; if (sub) await walk(sub, `${prefix}${node}/`); }
+          else out.push({ step: prefix + node, id: ids[node], model: resolved[node].model, thinking: resolved[node].thinking, tools: resolved[node].tools });
+        }
+      };
+      await walk(flow, "");
+      return out;
     }
 
     // Lebenslauf eines Schritts: stateJson.steps ist eine Liste aller Versuche mit Anfang, Ende, Ausgang und Urteil.
@@ -504,22 +583,25 @@ export default definePluginEntry({
       return steps;
     }
 
-    async function startStep(flowId, node, patch = {}) {
+    // Einen Agenten-Knoten des aktuellen Rahmens starten (node ist lokal, z.B. "pr"; der Schritt heißt "coding/pr")
+    async function startStep(flowId, node, root = {}, ctxPatch = {}) {
       const flow0 = latest(flowId);
-      const state = { ...(flow0.stateJson ?? {}), ...patch };
-      const flow = flowOf(state);
-      if (!flow.agents[node]) throw new Error(`${node} is not an agent of this flow`);
-      const attempt = (state.attempts?.[node] ?? 0) + 1;
+      const state = apply(flow0.stateJson ?? {}, root, ctxPatch);
+      const ctx = ctxOf(state); const flow = flowOf(state); const prefix = prefixOf(state);
+      if (!flow.agents[node]) throw new Error(`${prefix}${node} is not an agent of this flow`);
+      if (flow.agents[node].flow) { await startSubflow(flowId, node, state); return; }
+      const step = prefix + node;
+      const attempt = (state.attempts?.[step] ?? 0) + 1;
 
-      const override = projectSoul(state.cwd, node);
-      // Der Agent dieses Projekts für diesen Knoten — mit Modell, Effort und Tools aus flow.json
-      const { ids, resolved } = await ensureProjectAgents(state.repo, state.cwd, flow);
+      const override = projectSoul(state.cwd, step);
+      // Der Agent dieses Projekts für diesen Knoten — mit Modell, Effort und Tools aus der Flow-Definition
+      const { ids, resolved } = await ensureProjectAgents(state.repo, state.cwd, flow, prefix);
       const agentId = ids[node];
       const { model, thinking, tools } = resolved[node];
       const sessionKey = runSessionKey(agentId, flowId, attempt);
       const message = node === MASTER && flow.mode === "master"
-        ? buildMasterMessage(state, flow, Object.fromEntries(poolAgents(flow).map((id) => [id, describeAgent(state.cwd, resolved[id]?.templateWorkspace, id, flow.agents[id])])))
-        : buildMessage(state, node, attempt);
+        ? buildMasterMessage(state, ctx, prefix, flow, Object.fromEntries(poolAgents(flow).map((id) => [id, describeAgent(state.cwd, resolved[id]?.templateWorkspace, prefix + id, flow.agents[id], state.subflows)])))
+        : buildMessage(state, ctx, prefix, node, attempt);
       const run = await api.runtime.subagent.run({
         sessionKey,
         message,
@@ -529,133 +611,201 @@ export default definePluginEntry({
         deliver: false,
         cwd: state.cwd,
         lane: `pipeline:${flowId}`,
-        idempotencyKey: `${flowId}:${node}:${attempt}`,
+        idempotencyKey: `${flowId}:${step}:${attempt}`,
       });
 
       // Kein flows.runTask(): OpenClaw verknüpft Kind-Tasks nur, wenn der Lauf demselben Owner gehört wie der
       // Flow. Die Schritte laufen aber als eigene Agenten, der Flow gehört main — "Task backing ownership could
-      // not be verified". Die Verknüpfung Lauf ↔ Flow steht deshalb im Flow selbst (stateJson.runs[knoten] = runId).
+      // not be verified". Die Verknüpfung Lauf ↔ Flow steht deshalb im Flow selbst (stateJson.runs[schritt] = runId).
       const revision = latest(flowId).revision;
-      const nextState = {
+      let nextState = {
         ...state,
-        runs: { ...(state.runs ?? {}), [node]: run.runId },
-        attempts: { ...(state.attempts ?? {}), [node]: attempt },
-        steps: [...(state.steps ?? []), { step: node, attempt, runId: run.runId, sessionKey, agent: agentId, soulOverride: Boolean(override), model, thinking, tools, startedAt: Date.now() }],
+        runs: { ...(state.runs ?? {}), [step]: run.runId },
+        attempts: { ...(state.attempts ?? {}), [step]: attempt },
+        steps: [...(state.steps ?? []), { step, attempt, runId: run.runId, sessionKey, agent: agentId, soulOverride: Boolean(override), model, thinking, tools, startedAt: Date.now() }],
       };
-      if (flow.mode === "master") nextState.path = flowPath(flow, nextState);   // der Streifen folgt dem, was der Master tut
-      const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: node, stateJson: nextState });
-      if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${node} not recorded (${result.reason ?? "unknown"})`);
-      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${node} (agent ${agentId}, run ${run.runId}${model ? `, model ${model}` : ""}${thinking ? `, thinking ${thinking}` : ""}${tools ? `, tools ${tools.join("/")}` : ""})`);
+      if (flow.mode === "master") nextState = apply(nextState, {}, { path: flowPath(flow, nextState, prefix) });   // der Streifen folgt dem, was der Master tut
+      const result = flows.resume({ flowId, expectedRevision: revision, status: "running", currentStep: step, stateJson: nextState });
+      if (result && result.applied === false) log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: step ${step} not recorded (${result.reason ?? "unknown"})`);
+      log.info?.(`[pipeline] ${flowId.slice(0, 8)} → ${step} (agent ${agentId}, run ${run.runId}${model ? `, model ${model}` : ""}${thinking ? `, thinking ${thinking}` : ""}${tools ? `, tools ${tools.join("/")}` : ""})`);
       return run;
     }
 
-    // Einen Zielknoten betreten: Agent starten, am Gate warten, beenden oder scheitern
-    async function enter(flowId, target, patch, note) {
+    // Einen Sub-Flow betreten: neuer Rahmen auf dem Stack, ein Schritt "flow" für den Knoten außen, dann sein Start
+    async function startSubflow(flowId, node, state) {
+      const flow = flowOf(state); const prefix = prefixOf(state);
+      const name = flow.agents[node].flow;
+      const sub = subflowOf(state, name);
+      if (!sub) throw new Error(`Sub-Flow ${name} fehlt im Zustand des Flows`);
+      if ((state.stack?.length ?? 0) >= MAX_DEPTH) throw new Error(`Sub-Flow ${name}: tiefer als ${MAX_DEPTH} Ebenen geht nicht`);
+      const step = prefix + node;
+      mkdirSync(path.join(state.cwd, ".agentops", step), { recursive: true });
+      const frame = { node: step, name, flow: sub, path: flowPath(sub), prefix: `${step}/`, edgeCounts: {}, loops: 0, master: null, lastVerdict: null, lastUnresolved: null, startedAt: Date.now() };
+      const nextState = {
+        ...state,
+        attempts: { ...(state.attempts ?? {}), [step]: (state.attempts?.[step] ?? 0) + 1 },
+        steps: [...(state.steps ?? []), { step, attempt: (state.attempts?.[step] ?? 0) + 1, kind: "flow", flow: name, startedAt: Date.now() }],
+        stack: [...(state.stack ?? []), frame],
+      };
+      flows.resume({ flowId, expectedRevision: latest(flowId).revision, status: "running", currentStep: step, stateJson: nextState });
+      log.info?.(`[pipeline] ${flowId.slice(0, 8)} ↳ ${step} = sub-flow ${name} (${frame.path.join(" → ")})`);
+      await startStep(flowId, sub.mode === "master" ? MASTER : sub.start);
+    }
+
+    // Ein Sub-Flow ist fertig (done oder halt): Übergabedatei für außen schreiben, Rahmen abbauen, außen weiterrouten
+    async function finishSubflow(flowId, state, halted, note) {
+      const frame = frameOf(state); const sub = frame.flow;
+      const verdictLine = halted ? `HALT: ${note ?? "halt"}` : (frame.lastVerdict ? frame.lastVerdict.toUpperCase().replace(/_/g, " ") : "DONE");
+      const inner = (state.steps ?? []).filter((s) => s.step.startsWith(frame.prefix));
+      try {
+        writeFileSync(path.join(state.cwd, ".agentops", `${frame.node}.md`), [
+          `# ${frame.node} — sub-pipeline ${frame.name}`,
+          ``,
+          `Steps: ${inner.map((s) => `${s.step.slice(frame.prefix.length)}${s.verdict ? ` (${s.verdict})` : ""}`).join(" → ") || "none"}`,
+          `Notes: .agentops/${frame.prefix}*.md`,
+          ``,
+          verdictLine,
+          ``,
+        ].join("\n"));
+      } catch (error) { log.warn?.(`[pipeline] ${flowId.slice(0, 8)}: summary of ${frame.node} not written (${error?.message ?? error})`); }
+      const steps = closeStep(state, frame.node, { outcome: halted ? "halt" : "ok" }, halted ? "halt" : (frame.lastVerdict ?? "done"));
+      const popped = { ...state, steps, stack: state.stack.slice(0, -1) };
+      // Den abgebauten Rahmen festschreiben, bevor außen weitergeroutet wird — startStep und enter lesen den letzten Zustand neu
+      flows.resume({ flowId, expectedRevision: latest(flowId).revision, status: "running", currentStep: frame.node, stateJson: popped });
+      log.info?.(`[pipeline] ${flowId.slice(0, 8)} ↰ ${frame.node} ${halted ? "halted" : "done"} (${verdictLine})`);
+      await routeAfter(flowId, popped, localOf(frame.node), verdictLine, halted);
+    }
+
+    // Einen Zielknoten des aktuellen Rahmens betreten: Agent starten, am Gate warten, beenden oder scheitern.
+    // Ende oder halt in einem Sub-Flow beenden nur den Sub-Flow — außen geht es mit seinem Urteil weiter.
+    async function enter(flowId, target, root = {}, ctxPatch = {}, note = null) {
       const flow0 = latest(flowId);
-      const state = { ...(flow0.stateJson ?? {}), ...patch };
-      const flow = flowOf(state);
-      if (target === "done") {
-        flows.finish({ flowId, expectedRevision: flow0.revision, stateJson: { ...state, finishedAt: Date.now() } });
-        log.info?.(`[pipeline] ${flowId.slice(0, 8)} finished`);
-        return;
-      }
-      if (target === "halt") {
-        flows.fail({ flowId, expectedRevision: flow0.revision, blockedSummary: note ?? "halt", stateJson: { ...state, failedStep: state.steps?.at?.(-1)?.step ?? null, failedAt: Date.now() } });
-        log.warn?.(`[pipeline] ${flowId.slice(0, 8)} halted: ${note ?? "halt"}`);
+      const state = apply(flow0.stateJson ?? {}, root, ctxPatch);
+      const ctx = ctxOf(state); const flow = flowOf(state); const prefix = prefixOf(state);
+      if (target === "done" || target === "halt") {
+        if (frameOf(state)) { await finishSubflow(flowId, state, target === "halt", note); return; }
+        if (target === "done") {
+          flows.finish({ flowId, expectedRevision: flow0.revision, stateJson: { ...state, finishedAt: Date.now() } });
+          log.info?.(`[pipeline] ${flowId.slice(0, 8)} finished`);
+        } else {
+          flows.fail({ flowId, expectedRevision: flow0.revision, blockedSummary: note ?? "halt", stateJson: { ...state, failedStep: state.steps?.at?.(-1)?.step ?? null, failedAt: Date.now() } });
+          log.warn?.(`[pipeline] ${flowId.slice(0, 8)} halted: ${note ?? "halt"}`);
+        }
         return;
       }
       if (flow.gates.includes(target)) {
         const after = flow.mode === "master" ? tailAgents(flow)[0] ?? "done" : flow.edges.find((e) => e.from === target && !e.on)?.to ?? "done";
+        const gateName = prefix + target;
         flows.setWaiting({
           flowId,
           expectedRevision: flow0.revision,
-          currentStep: target,
-          waitJson: { kind: "gate", gate: target, step: after, requestedAt: Date.now(), review: state.lastUnresolved ? "request_changes_unresolved" : (state.lastVerdict ?? null), unresolved: state.lastUnresolved ?? null },
-          stateJson: { ...state, gate: { status: "pending", gate: target, step: after, requestedAt: Date.now() } },
+          currentStep: gateName,
+          waitJson: { kind: "gate", gate: gateName, step: after, requestedAt: Date.now(), review: ctx.lastUnresolved ? "request_changes_unresolved" : (ctx.lastVerdict ?? null), unresolved: ctx.lastUnresolved ?? null },
+          stateJson: { ...state, gate: { status: "pending", gate: gateName, step: after, requestedAt: Date.now() } },
         });
-        log.info?.(`[pipeline] ${flowId.slice(0, 8)} waiting at ${target} before ${after}`);
+        log.info?.(`[pipeline] ${flowId.slice(0, 8)} waiting at ${gateName} before ${after}`);
         return;
       }
-      await startStep(flowId, target, patch);
+      await startStep(flowId, target, root, ctxPatch);
     }
 
     // Master-Modus: nach jedem Schritt entscheidet der Master — außer die Pflicht-Agenten laufen gerade nach oder der
     // Flow ist schon hinter dem Gate; dann ist die Reihenfolge fest.
-    async function masterNext(flowId, node, event, flow, state) {
+    async function masterNext(flowId, node, verdict, line, state, steps) {
+      const ctx = ctxOf(state); const flow = flowOf(state); const prefix = prefixOf(state);
       const tail = tailAgents(flow);
       if (tail.includes(node)) {   // hinter dem Gate: der nächste Agent nach dem Gate, sonst fertig
-        const next = tail[tail.indexOf(node) + 1];
-        const steps = closeStep(state, node, event, null);
-        await enter(flowId, next ?? "done", { steps }, null);
+        await enter(flowId, tail[tail.indexOf(node) + 1] ?? "done", { steps }, {}, null);
         return;
       }
       if (node === MASTER) {
-        const line = lastLine(state.cwd, "master.md");
         const m = /NEXT:\s*([A-Z0-9_-]+)/.exec(line);
         const choice = m ? m[1].toLowerCase() : "done";
-        const decisions = [...(state.master?.decisions ?? []), { at: Date.now(), next: choice, line: line.slice(0, 120) }];
-        const patch = { steps: closeStep(state, node, event, choice === "done" ? "done" : `next: ${choice}`), master: { ...(state.master ?? {}), decisions, phase: "master" } };
+        const decisions = [...(ctx.master?.decisions ?? []), { at: Date.now(), next: choice, line: line.slice(0, 120) }];
         const pool = poolAgents(flow);
-        if (choice !== "done" && !pool.includes(choice)) log.warn?.(`[pipeline] ${flowId.slice(0, 8)} master chose unknown agent "${choice}" — treating as done`);
+        const ctxPatch = { master: { ...(ctx.master ?? {}), decisions, phase: "master" } };
+        if (choice !== "done" && !pool.includes(choice)) log.warn?.(`[pipeline] ${flowId.slice(0, 8)} ${prefix}master chose unknown agent "${choice}" — treating as done`);
         if (choice !== "done" && pool.includes(choice) && decisions.length < flow.master.maxSteps) {
-          log.info?.(`[pipeline] ${flowId.slice(0, 8)} master → ${choice} (${decisions.length}/${flow.master.maxSteps})`);
-          await startStep(flowId, choice, patch);
+          log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${prefix}master → ${choice} (${decisions.length}/${flow.master.maxSteps})`);
+          await startStep(flowId, choice, { steps }, ctxPatch);
           return;
         }
-        if (choice !== "done" && pool.includes(choice)) log.warn?.(`[pipeline] ${flowId.slice(0, 8)} master step limit ${flow.master.maxSteps} reached — finishing`);
-        await finishMasterPhase(flowId, flow, { ...state, ...patch }, patch);
+        if (choice !== "done" && pool.includes(choice)) log.warn?.(`[pipeline] ${flowId.slice(0, 8)} ${prefix}master step limit ${flow.master.maxSteps} reached — finishing`);
+        await finishMasterPhase(flowId, apply(state, { steps }, ctxPatch));
         return;
       }
-      // Ein Agent aus dem Pool ist fertig: Urteil merken, dann zurück zum Master — oder die Pflicht-Agenten weiter
-      const line = lastLine(state.cwd, `${node}.md`);
-      const verdict = /\bPASS\b/.test(line) ? "pass" : /\bAPPROVE\b/.test(line) ? "approve" : /\b(FAIL|REQUEST_CHANGES|BLOCK)\b/.test(line) ? line.toLowerCase().replace(/\s+/g, "_").slice(0, 40) : null;
-      const patch = { steps: closeStep(state, node, event, verdict), lastVerdict: verdict };
-      if (state.master?.phase === "required") { await finishMasterPhase(flowId, flow, { ...state, ...patch }, patch); return; }
-      await startStep(flowId, MASTER, patch);
+      // Ein Agent aus dem Pool ist fertig: zurück zum Master — oder die Pflicht-Agenten weiter
+      const ctxPatch = { lastVerdict: verdict };
+      if (ctx.master?.phase === "required") { await finishMasterPhase(flowId, apply(state, { steps }, ctxPatch)); return; }
+      await startStep(flowId, MASTER, { steps }, ctxPatch);
     }
 
-    // Nach dem letzten Wort des Masters: Pflicht-Agenten nachholen, die noch nicht gelaufen sind, dann das Gate
-    async function finishMasterPhase(flowId, flow, state, patch) {
-      const ran = new Set((state.steps ?? []).filter((s) => s.endedAt != null).map((s) => s.step));
+    // Nach dem letzten Wort des Masters: Pflicht-Agenten nachholen, die noch nicht gelaufen sind, dann das Gate (oder das Ende im Sub-Flow)
+    async function finishMasterPhase(flowId, state) {
+      const ctx = ctxOf(state); const flow = flowOf(state); const prefix = prefixOf(state);
+      const ran = new Set((state.steps ?? []).filter((s) => s.endedAt != null && s.step.startsWith(prefix)).map((s) => s.step.slice(prefix.length)));
       const pending = requiredAgents(flow).filter((id) => !ran.has(id));
+      const master = { ...(ctx.master ?? {}), phase: pending.length ? "required" : "gate" };
+      const patched = apply(state, {}, { master });
       if (pending.length) {
-        log.info?.(`[pipeline] ${flowId.slice(0, 8)} required agents pending: ${pending.join(", ")}`);
-        await startStep(flowId, pending[0], { ...patch, master: { ...(state.master ?? {}), phase: "required" } });
+        log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${prefix}required agents pending: ${pending.join(", ")}`);
+        flows.resume({ flowId, expectedRevision: latest(flowId).revision, status: "running", currentStep: latest(flowId).currentStep, stateJson: patched });
+        await startStep(flowId, pending[0]);
         return;
       }
-      await enter(flowId, flow.gates[0], { ...patch, master: { ...(state.master ?? {}), phase: "gate" } }, null);
+      flows.resume({ flowId, expectedRevision: latest(flowId).revision, status: "running", currentStep: latest(flowId).currentStep, stateJson: patched });
+      await enter(flowId, flow.gates[0] ?? "done", {}, {}, null);
     }
 
-    async function onStepEnded(flowId, node, event) {
+    // Weiterrouten, nachdem ein Knoten des aktuellen Rahmens fertig ist (Agent oder Sub-Flow). node ist lokal.
+    async function routeAfter(flowId, state, node, line, halted = false) {
+      const ctx = ctxOf(state); const flow = flowOf(state); const prefix = prefixOf(state);
+      const steps = state.steps;
+      if (flow.mode === "master") {
+        const verdict = halted ? "halt" : /\bPASS\b/.test(line) ? "pass" : /\bAPPROVE\b/.test(line) ? "approve" : /\b(FAIL|REQUEST_CHANGES|BLOCK)\b/.test(line) ? line.toLowerCase().replace(/\s+/g, "_").slice(0, 40) : null;
+        await masterNext(flowId, node, verdict, line, state, steps);
+        return;
+      }
+      const { edge, exhausted } = nextEdge(flow, ctx, node, line);
+      if (halted && !edge.on) {   // ein gescheiterter Sub-Flow ohne passende Kante reißt den äußeren Flow mit
+        await enter(flowId, "halt", { steps }, {}, `${prefix}${node}: ${line.slice(0, 80)}`);
+        return;
+      }
+      const verdict = edge.on ? edge.on.toLowerCase().replace(/\s+/g, "_") : exhausted ? exhausted.on.toLowerCase().replace(/\s+/g, "_") : /\bPASS\b/.test(line) ? "pass" : /\bAPPROVE\b/.test(line) ? "approve" : null;
+      const key = `${edge.from}>${edge.to}`;
+      const ctxPatch = {
+        edgeCounts: { ...(ctx.edgeCounts ?? {}), [key]: (ctx.edgeCounts?.[key] ?? 0) + 1 },
+        loops: (ctx.loops ?? 0) + (edge.on && flow.agents[edge.to] ? 1 : 0),
+        lastVerdict: verdict,
+        lastUnresolved: exhausted ? `${prefix}${node}: ${exhausted.on} (${exhausted.max}× erreicht)` : null,
+      };
+      if (edge.on) log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${prefix}${node}: ${edge.on} → ${edge.to}${edge.max ? ` (${ctxPatch.edgeCounts[key]}/${edge.max})` : ""}`);
+      else if (exhausted) log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${prefix}${node}: ${exhausted.on} again, limit ${exhausted.max} reached → ${edge.to}`);
+      await enter(flowId, edge.to, { steps }, ctxPatch, edge.to === "halt" ? `${prefix}${node}: ${line.slice(0, 80)} — siehe .agentops/${prefix}${node}.md` : null);
+    }
+
+    async function onStepEnded(flowId, step, event) {
       const flow0 = latest(flowId);
       const state = flow0.stateJson ?? {};
-      const flow = flowOf(state);
+      const prefix = prefixOf(state);
+      const node = step.startsWith(prefix) ? step.slice(prefix.length) : localOf(step);
       if (event.outcome !== "ok") {
         flows.fail({
           flowId,
           expectedRevision: flow0.revision,
-          blockedSummary: `${node} failed (${event.outcome ?? "unknown"})`,
-          stateJson: { ...state, steps: closeStep(state, node, event), failedStep: node, failedAt: Date.now() },
+          blockedSummary: `${step} failed (${event.outcome ?? "unknown"})`,
+          stateJson: { ...state, steps: closeStep(state, step, event), failedStep: step, failedAt: Date.now() },
         });
-        log.warn?.(`[pipeline] ${flowId.slice(0, 8)} failed at ${node}`);
+        log.warn?.(`[pipeline] ${flowId.slice(0, 8)} failed at ${step}`);
         return;
       }
-      if (flow.mode === "master") { await masterNext(flowId, node, event, flow, state); return; }
       // Das Urteil des Schritts — deterministisch, aus der letzten Zeile der Übergabedatei, nicht aus dem Modell
-      const line = lastLine(state.cwd, `${node}.md`);
-      const { edge, exhausted } = nextEdge(flow, state, node, line);
-      const verdict = edge.on ? edge.on.toLowerCase().replace(/\s+/g, "_") : exhausted ? exhausted.on.toLowerCase().replace(/\s+/g, "_") : /\bPASS\b/.test(line) ? "pass" : /\bAPPROVE\b/.test(line) ? "approve" : null;
-      const key = `${edge.from}>${edge.to}`;
-      const patch = {
-        steps: closeStep(state, node, event, verdict),
-        edgeCounts: { ...(state.edgeCounts ?? {}), [key]: (state.edgeCounts?.[key] ?? 0) + 1 },
-        loops: (state.loops ?? 0) + (edge.on && flow.agents[edge.to] ? 1 : 0),
-        lastVerdict: verdict,
-        lastUnresolved: exhausted ? `${node}: ${exhausted.on} (${exhausted.max}× erreicht)` : null,
-      };
-      if (edge.on) log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${node}: ${edge.on} → ${edge.to}${edge.max ? ` (${patch.edgeCounts[key]}/${edge.max})` : ""}`);
-      else if (exhausted) log.info?.(`[pipeline] ${flowId.slice(0, 8)} ${node}: ${exhausted.on} again, limit ${exhausted.max} reached → ${edge.to}`);
-      await enter(flowId, edge.to, patch, edge.to === "halt" ? `${node}: ${line.slice(0, 80)} — siehe .agentops/${node}.md` : null);
+      const line = lastLine(state.cwd, `${step}.md`);
+      const flow = flowOf(state);
+      const verdict = flow.mode === "master" && node === MASTER
+        ? (/NEXT:\s*DONE/.test(line) ? "done" : `next: ${(/NEXT:\s*([A-Z0-9_-]+)/.exec(line)?.[1] ?? "?").toLowerCase()}`)
+        : /\bPASS\b/.test(line) ? "pass" : /\bAPPROVE\b/.test(line) ? "approve" : /\b(FAIL|REQUEST_CHANGES|BLOCK)\b/.test(line) ? line.toLowerCase().replace(/\s+/g, "_").slice(0, 40) : null;
+      await routeAfter(flowId, { ...state, steps: closeStep(state, step, event, verdict) }, node, line, false);
     }
 
     async function decideGate(flowId, decision, by) {
@@ -664,10 +814,10 @@ export default definePluginEntry({
       if (decision !== "allow" && decision !== "deny") throw new Error("decision must be allow or deny");
       const after = flow0.waitJson.step ?? "done";
       const gate = { ...(flow0.stateJson?.gate ?? {}), status: decision === "allow" ? "allowed" : "denied", decision, by, decidedAt: Date.now() };
-      const state = { ...(flow0.stateJson ?? {}), gate, lastUnresolved: null };
+      const state = apply({ ...(flow0.stateJson ?? {}), gate }, {}, { lastUnresolved: null });
       if (decision === "allow") {
-        flows.resume({ flowId, expectedRevision: flow0.revision, status: "running", currentStep: after === "done" ? flow0.currentStep : after, stateJson: state });
-        await enter(flowId, after, {}, null);
+        flows.resume({ flowId, expectedRevision: flow0.revision, status: "running", currentStep: flow0.currentStep, stateJson: state });
+        await enter(flowId, after, {}, {}, null);
       } else {
         flows.fail({ flowId, expectedRevision: flow0.revision, blockedSummary: `gate denied by ${by}`, stateJson: state });
       }
@@ -721,27 +871,28 @@ export default definePluginEntry({
             return json(res, 200, { groups: await listTools() });
           }
 
-          // Der Flow eines Projekts, wie das Plugin ihn liest: flow.json (mit agents.json-Altbestand) oder Standard, geprüft
+          // Der Flow eines Projekts, wie das Plugin ihn liest: flow.json (mit agents.json-Altbestand) oder Standard, geprüft, samt Sub-Flows
           if (req.method === "GET" && rest[0] === "projects" && rest.length === 3 && rest[2] === "flow") {
             const cwd = repoDir(rest[1]);
             if (!cwd) return json(res, 404, { error: `repo not found: ${rest[1]}` });
-            const { flow, source, error } = loadFlow(cwd);
-            return json(res, 200, { flow, path: flowPath(flow), source, error, templates: TEMPLATE_STEPS });
+            const { flow, source, subflows, error } = loadFlow(cwd);
+            return json(res, 200, { flow, path: flowPath(flow), source, error, templates: TEMPLATE_STEPS, subflows: Object.fromEntries(Object.entries(subflows).map(([n, f]) => [n, { flow: f, path: flowPath(f) }])) });
           }
-          // Eine Definition prüfen, ohne sie zu speichern — das Cockpit fragt vor dem Commit
+          // Eine Definition prüfen, ohne sie zu speichern — das Cockpit fragt vor dem Commit. Mit repo werden Sub-Flow-Verweise gegen die Platte geprüft.
           if (req.method === "POST" && rest[0] === "flow" && rest.length === 2 && rest[1] === "validate") {
             const body = await readJson(req);
             const flow = normalizeFlow(body);
-            return json(res, 200, { flow, path: flowPath(flow), error: validateFlow(flow) });
+            let error = validateFlow(flow, { sub: body.sub === true });
+            if (!error && body.repo) { const cwd = repoDir(String(body.repo)); if (cwd) error = checkSubflows(cwd, flow, body.sub === true && typeof body.name === "string" ? [body.name] : []).error; }
+            return json(res, 200, { flow, path: flowPath(flow), error });
           }
           // Die Agenten eines Projekts anlegen/abgleichen, ohne einen Lauf — z.B. nach einer Änderung im Cockpit
           if (req.method === "POST" && rest[0] === "projects" && rest.length === 3 && rest[2] === "sync") {
             const cwd = repoDir(rest[1]);
             if (!cwd) return json(res, 404, { error: `repo not found: ${rest[1]}` });
-            const { flow, error } = loadFlow(cwd);
+            const { flow, subflows, error } = loadFlow(cwd);
             if (error) return json(res, 400, { error });
-            const { ids, resolved } = await ensureProjectAgents(rest[1], cwd, flow);
-            return json(res, 200, { agents: Object.keys(flow.agents).map((n) => ({ step: n, id: ids[n], model: resolved[n].model, thinking: resolved[n].thinking, tools: resolved[n].tools })) });
+            return json(res, 200, { agents: await ensureAllAgents(rest[1], cwd, flow, subflows) });
           }
 
           if (req.method === "POST" && rest[0] === "start" && rest.length === 1) {
@@ -751,7 +902,7 @@ export default definePluginEntry({
             const cwd = repoDir(repo);
             if (!cwd) return json(res, 404, { error: `repo not found: ${repo}` });
             if (!goal) return json(res, 400, { error: "goal required" });
-            const { flow, error } = loadFlow(cwd);
+            const { flow, subflows, error } = loadFlow(cwd);
             if (error) return json(res, 400, { error: `flow.json: ${error}` });
             const created = flows.createManaged({
               controllerId: CONTROLLER_ID,
@@ -759,7 +910,7 @@ export default definePluginEntry({
               status: "running",
               currentStep: flow.start,
               notifyPolicy: "silent",
-              stateJson: { repo, cwd, goal, runs: {}, attempts: {}, steps: [], edgeCounts: {}, loops: 0, flow, path: flowPath(flow), startedAt: Date.now() },
+              stateJson: { repo, cwd, goal, runs: {}, attempts: {}, steps: [], edgeCounts: {}, loops: 0, flow, subflows, path: flowPath(flow), stack: [], startedAt: Date.now() },
             });
             const created0 = created?.flow ?? created;
             if (!created0?.flowId) return json(res, 500, { error: "createManaged returned no flow", detail: created });

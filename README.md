@@ -176,6 +176,20 @@ laufen erst nach der Freigabe, in ihrer Reihenfolge; Gates bleiben Menschen; hö
 wenige Cent). Im Cockpit: Modus-Schalter im Flow-Editor, je Agent Pflicht, „nach Gate“ und Beschreibung; der Master hat
 wie jeder Knoten Modell, Effort, Tools und Soul je Projekt.
 
+**Sub-Flows (Stufe 3).** Ein Agent kann selbst ein Flow sein: `"code": { "flow": "coding" }` in flow.json zeigt auf
+`.agentops/flows/coding.json`, eine ganz normale Flow-Datei (Graph- oder Master-Modus, eigene Agenten mit Modell, Effort,
+Tools und Soul, Kanten mit Urteil und Obergrenze) — nur ein Gate braucht sie nicht. Für den äußeren Flow ist der Sub-Flow
+ein Schritt: das Plugin legt einen Rahmen auf den Stack, läuft ihn durch, schreibt `.agentops/code.md` als Zusammenfassung
+(Schritte, Urteile, letzte Zeile das Urteil des letzten Sub-Schritts, z.B. `PASS`) und routet außen damit weiter; ein
+halt im Sub-Flow reißt den äußeren Flow mit, wenn keine Kante das Urteil fängt. Die Schritte heißen `code/pr`, ihre
+Agenten `pipeline-<projekt>-code-pr`, ihre Notizen liegen in `.agentops/code/`, ihre Souls in `.agentops/souls/code/pr.md`.
+Höchstens drei Ebenen, keine Zyklen. So zwingt man dem Master einen Coding-Agenten auf, der intern Code schreibt, ihn von
+einem zweiten Modell wie einen Pull-Request prüfen lässt und dann auf Sicherheit testet — der Master sieht nur „code“.
+Im Cockpit hat der Flow-Editor einen Reiter je Flow-Datei („Hauptflow“, „Sub-Flow coding“, „+ Sub-Flow“), je Agent ein
+Sub-Flow-Feld; die Karte zeichnet Sub-Flow-Agenten als Sechseck, ein Klick taucht in ihren Graphen ein; auf der Flow-Seite
+rücken die Schritte des Sub-Flows unter seiner Zeile ein. Beim ersten Lauf auf dem Playground: master → code (code → pr
+mit gpt-5.4-mini → security) → test → review → …, Urteil PASS nach außen, das Gate am Ende wie immer ein Mensch.
+
 Im Cockpit bearbeitet die Projektseite den Flow („Flow des Projekts“: Agenten hinzufügen/entfernen, Gates, Start, Kanten
 verbinden/lösen); das Plugin prüft die Definition (`POST /flow/validate`), das Cockpit committet sie und stößt den Abgleich
 der Projekt-Agenten an. Ein Agent ohne Vorlage (nicht plan/code/test/review/ship) bekommt eine knappe Standard-Soul, die

@@ -5,7 +5,8 @@ import { mountProjectMap, fmtDuration, fmtTokens, DEFAULT_GRAPH } from "/map.js"
 
 // Der Graph eines Flows für die Karte: Knoten in Reihenfolge des Hauptwegs (Agenten und Gates), alle Kanten.
 // Im Master-Modus gibt es keine Kanten im Pool — der Master (die Mitte) ruft; gezeichnet werden nur Gate und Nachlauf.
-function graphOf(flow, path) {
+// prefix ("coding/") macht aus einem Sub-Flow-Graphen die Knoten, wie die Läufe sie nennen (coding/pr).
+function graphOf(flow, path, prefix = "") {
   if (!flow?.agents) return DEFAULT_GRAPH;
   const gates = flow.gates ?? [];
   const ids = (path?.length ? path : [...Object.keys(flow.agents), ...gates]).filter((id) => id !== "master" && (flow.agents[id] || gates.includes(id)));
@@ -14,7 +15,11 @@ function graphOf(flow, path) {
     const tail = Object.entries(flow.agents).filter(([id, a]) => id !== "master" && a.after === "gate").map(([id]) => id);
     edges = [...gates, ...tail].slice(0, -1).map((from, i) => ({ from, to: [...gates, ...tail][i + 1], on: null })).filter((e) => e.to);
   }
-  return { nodes: ids.map((id) => ({ id, kind: gates.includes(id) ? "gate" : "agent" })), edges, path: ids };
+  return {
+    nodes: ids.map((id) => ({ id: prefix + id, kind: gates.includes(id) ? "gate" : flow.agents[id]?.flow ? "flow" : "agent", flow: flow.agents[id]?.flow ?? null })),
+    edges: edges.map((e) => ({ from: prefix + e.from, to: prefix + e.to, on: e.on })),
+    path: ids.map((id) => prefix + id),
+  };
 }
 
 const STEPS = ["plan", "code", "test", "review", "gate", "ship"];
@@ -84,7 +89,7 @@ const short = (id) => String(id ?? "").slice(0, 8);
 // Der Stufenstreifen folgt dem Hauptweg des Flows (state.path); ältere Flows kennen nur die sechs Stufen
 function strip(flow, big = false, path = null, gates = null) {
   const steps = path?.length ? path : STEPS; const gateSet = new Set(gates ?? ["gate"]);
-  const cur = flow.stage || ""; const idx = steps.indexOf(cur);
+  const cur = flow.stage || ""; const idx = steps.findIndex((s) => s === cur || cur.startsWith(`${s}/`));   // coding/pr zählt für coding
   const done = flow.status === "succeeded"; const halted = HALTED.has(flow.status);
   return `<div class="strip${big ? " strip--big" : ""}" style="grid-template-columns:repeat(${steps.length},1fr)" role="img" aria-label="Schritt ${esc(cur || "–")}, ${esc(flow.status)}">${steps.map((s, i) => {
     let cls = "seg";
@@ -219,9 +224,12 @@ async function pageGates() {
 function stepRow(s) {
   const tok = s.tokens; const running = s.startedAt && !s.endedAt;
   const ms = s.durationMs ?? (running ? Date.now() - s.startedAt : null);
-  const verdictCls = s.verdict === "fail" || s.verdict === "request_changes" ? "badge--warning" : "badge--success";
-  return `<details class="step" data-key="${esc(s.step)}-${esc(s.attempt)}"><summary>
-      <span class="step__name mono">${esc(s.step)}${s.attempt > 1 ? `<span class="badge badge--accent">Versuch ${esc(s.attempt)}</span>` : ""}${running ? `<span class="badge badge--accent">läuft</span>` : ""}</span>
+  const verdictCls = /fail|request_changes|block|halt/.test(s.verdict ?? "") ? "badge--warning" : "badge--success";
+  const depth = (s.step.match(/\//g) ?? []).length; const name = s.step.split("/").pop();
+  // Ein Sub-Flow ist ein Schritt ohne eigenen Lauf: seine Zeile fasst zusammen, die Schritte darunter sind eingerückt
+  if (s.kind === "flow") return `<div class="step step--flow" style="--depth:${depth}"><div class="step__sum"><span class="step__name mono">${esc(name)}<span class="badge badge--neutral">Sub-Flow${s.flow ? ` ${esc(s.flow)}` : ""}</span>${running ? `<span class="badge badge--accent">läuft</span>` : ""}</span><span class="step__meta"><span>${esc(fmtDuration(ms))}</span>${s.verdict ? `<span class="badge ${verdictCls}">${esc(s.verdict)}</span>` : ""}</span></div></div>`;
+  return `<details class="step" data-key="${esc(s.step)}-${esc(s.attempt)}" style="--depth:${depth}"><summary>
+      <span class="step__name mono">${esc(name)}${s.attempt > 1 ? `<span class="badge badge--accent">Versuch ${esc(s.attempt)}</span>` : ""}${running ? `<span class="badge badge--accent">läuft</span>` : ""}</span>
       <span class="step__meta">${s.model ? `<span>${esc(s.model)}</span>` : ""}${s.thinking ? `<span title="Effort (Thinking-Level) aus dem Projekt">effort ${esc(s.thinking)}</span>` : ""}<span>${esc(fmtDuration(ms))}</span><span>${tok ? `${esc(fmtTokens(tok.total))} tok` : "–"}</span><span>${s.cost != null ? esc(usd(s.cost)) : ""}</span>${s.verdict ? `<span class="badge ${verdictCls}">${esc(s.verdict)}</span>` : ""}${s.outcome && s.outcome !== "ok" ? `<span class="badge badge--danger">${esc(s.outcome)}</span>` : ""}</span>
     </summary>
     <div class="step__body">
@@ -309,23 +317,25 @@ function disposeMap() { if (liveMap) { liveMap.dispose(); liveMap = null; } }
 async function pageProject(name) {
   setTitle("Projekt", name);
   disposeMap();
-  const [souls, byId, agents, global, toolCatalog, flowDef] = await Promise.all([
+  const [souls, byId, agents, global, toolCatalog, flowDef, subs] = await Promise.all([
     api(`/projects/${encodeURIComponent(name)}/souls`), pipelineIndex(),
     api(`/projects/${encodeURIComponent(name)}/agents`).catch(() => ({})),
     api("/agents").catch(() => ({ agents: [], models: [] })),
     api("/tools").catch(() => ({ groups: [] })),
     api(`/projects/${encodeURIComponent(name)}/flow`).catch(() => null),
+    api(`/projects/${encodeURIComponent(name)}/flows`).catch(() => []),
   ]);
   const toolGroups = (toolCatalog.groups ?? []).filter((g) => g.tools?.length);
-  // Der Flow des Projekts: Agenten (Knoten), Gates, Kanten, Start — aus flow.json oder der Standard
+  // Der Flow des Projekts: Agenten (Knoten), Gates, Kanten, Start — aus flow.json oder der Standard; Sub-Flows aus .agentops/flows/
   const flow = flowDef?.flow ?? null;
-  const nodeIds = flow ? Object.keys(flow.agents ?? {}) : SOUL_STEPS;
+  const nodeIds = Object.keys(souls).length ? Object.keys(souls) : SOUL_STEPS;   // alle Agenten-Knoten, auch coding/pr
   const graph = flow ? graphOf(flow, flowDef.path) : DEFAULT_GRAPH;
   const pathText = (flowDef?.path ?? STEPS).join(" → ");
+  const subflows = flowDef?.subflows ?? {};
   const models = global.models ?? []; const known = (key) => models.some((m) => m.key === key);
   const byProvider = new Map(); for (const m of models) byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), m]);
-  const globalModel = (s) => (global.agents ?? []).find((a) => a.step === s)?.model ?? null;
-  const globalThinking = (s) => { const a = (global.agents ?? []).find((x) => x.step === s); return a?.thinking ?? a?.thinkingDefault ?? null; };
+  const globalModel = (s) => (global.agents ?? []).find((a) => a.step === s.split("/").pop())?.model ?? null;
+  const globalThinking = (s) => { const a = (global.agents ?? []).find((x) => x.step === s.split("/").pop()); return a?.thinking ?? a?.thinkingDefault ?? null; };
   const modelOptions = (current, fallback) => `<option value=""${!current ? " selected" : ""}>Standard-Agent${fallback ? ` — ${esc(fallback)}` : ""}</option>`
     + [...byProvider.keys()].sort().map((p) => `<optgroup label="${esc(p)}">${byProvider.get(p).map((m) => `<option value="${esc(m.key)}"${m.key === current ? " selected" : ""}${m.available ? "" : " disabled"}>${esc(m.name)} — ${esc(m.key)}${m.available ? "" : " (kein Zugang)"}</option>`).join("")}</optgroup>`).join("")
     + `<option value="__other"${current && !known(current) ? " selected" : ""}>Anderes Modell (ID eingeben)…</option>`;
@@ -333,7 +343,7 @@ async function pageProject(name) {
   const runs = mine().sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 6);
   const active = nodeIds.includes(pageProject.tab) ? pageProject.tab : nodeIds[0];
   page().innerHTML = `
-    ${card("Karte", "activity", `<div class="map" id="map"><div class="map__legend"><span><i style="background:var(--accent)"></i>arbeitet</span><span><i style="background:var(--success)"></i>erledigt</span><span><i style="background:var(--warning)"></i>Gate offen</span><span><i style="background:var(--danger)"></i>gestoppt</span></div><div class="map__hint">ziehen dreht · Strg+Rad zoomt · Klick öffnet die Soul</div></div>`, `<span class="dim" id="map-count" style="font-size:12px">${runs.filter((f) => f.status === "running").length} Flows arbeiten</span>`)}
+    ${card("Karte", "activity", `<div class="map" id="map"><div class="map__legend"><span><i style="background:var(--accent)"></i>arbeitet</span><span><i style="background:var(--success)"></i>erledigt</span><span><i style="background:var(--warning)"></i>Gate offen</span><span><i style="background:var(--danger)"></i>gestoppt</span></div><div class="map__hint">ziehen dreht · Strg+Rad zoomt · Klick öffnet die Soul, ein Sechseck den Sub-Flow</div><button class="btn btn--secondary btn--sm map-back" id="map-back" type="button" hidden>← Hauptflow</button></div>`, `<span class="dim" id="map-count" style="font-size:12px">${runs.filter((f) => f.status === "running").length} Flows arbeiten</span>`)}
     ${card("Pipeline starten", "play", `<div class="card__body"><form id="run-form" class="field"><label class="field__label" for="goal">Was soll die Pipeline in <span class="mono">${esc(name)}</span> tun?</label><textarea class="textarea" id="goal" required placeholder="Zum Beispiel: Add divide(a, b) with a test for division by zero"></textarea><div class="actions" style="margin-top:4px"><button class="btn btn--primary" type="submit">${icon("play", "icon icon--sm")}Pipeline starten</button><span class="dim" style="font-size:12px">${esc(pathText)}</span></div></form></div>`)}
     ${card("Letzte Läufe", "workflow", runs.length ? `<div class="card__body card__body--flush"><table class="table"><tbody>${runs.map((f) => `<tr class="link" data-href="#/flows/${esc(f.flowId)}"><td style="width:240px">${strip({ stage: f.currentStep, status: f.status, gateOpen: f.status === "waiting" && f.wait?.kind === "gate" }, false, f.state?.path, f.state?.flow?.gates)}</td><td class="strong cell-goal">${esc(f.goal)}</td><td>${statusDot(f.status)}</td><td class="num dim">${esc(timeAgo(f.updatedAt))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Noch kein Lauf in diesem Projekt.</div>`)}
     ${card("Flow des Projekts", "workflow", `<div class="card__body" id="flow-editor"></div>`, `<span class="dim" style="font-size:12px">${flowDef?.source === "flow.json" ? "aus <span class=\"mono\">.agentops/flow.json</span>" : "Standard-Flow — Speichern legt <span class=\"mono\">.agentops/flow.json</span> an"}</span>`)}
@@ -385,29 +395,45 @@ async function pageProject(name) {
     });
   };
   renderAgent(active);
-
-  // Flow-Editor: Agenten hinzufügen und entfernen, Kanten verbinden und lösen, Gates, Start — gespeichert wird die ganze Definition
-  const draft = flow ? JSON.parse(JSON.stringify(flow)) : { mode: "graph", start: "plan", agents: Object.fromEntries(SOUL_STEPS.map((s) => [s, {}])), gates: ["gate"], edges: DEFAULT_GRAPH.edges.map((e) => ({ from: e.from, to: e.to, on: e.on ?? null, max: e.on ? 2 : null })), master: { maxSteps: 8 } };
-  draft.mode = draft.mode === "master" ? "master" : "graph"; draft.master = { maxSteps: draft.master?.maxSteps ?? 8 };
-  draft.edges = (draft.edges ?? []).map((e) => Array.isArray(e) ? { from: e[0], to: e[1], on: null, max: null } : { from: e.from, to: e.to, on: e.on ?? null, max: e.max ?? null });
+  // Flow-Editor mit einem Reiter je Flow-Datei: Hauptflow (.agentops/flow.json) und Sub-Flows (.agentops/flows/<name>.json).
+  // Ein Agent kann auf einen Sub-Flow zeigen — dann läuft dieser Flow als ein Schritt des äußeren, im Code erzwungen.
   const NODE_ID = /^[a-z][a-z0-9_-]{0,30}$/;
-  const renderFlowEditor = (error = flowDef?.error ?? null) => {
+  const normalizeDraft = (d) => {
+    const draft = JSON.parse(JSON.stringify(d ?? {}));
+    draft.mode = draft.mode === "master" ? "master" : "graph"; draft.master = { maxSteps: draft.master?.maxSteps ?? 8 };
+    draft.agents = draft.agents && typeof draft.agents === "object" ? draft.agents : {}; draft.gates = Array.isArray(draft.gates) ? draft.gates : [];
+    for (const id of Object.keys(draft.agents)) if (!draft.agents[id] || typeof draft.agents[id] !== "object") draft.agents[id] = {};
+    draft.edges = (draft.edges ?? []).map((e) => Array.isArray(e) ? { from: e[0], to: e[1], on: null, max: null } : { from: e.from, to: e.to, on: e.on ?? null, max: e.max ?? null });
+    if (!draft.start || !draft.agents[draft.start]) draft.start = Object.keys(draft.agents).find((id) => id !== "master") ?? null;
+    return draft;
+  };
+  const drafts = { main: normalizeDraft(flow ?? { mode: "graph", start: "plan", agents: Object.fromEntries(SOUL_STEPS.map((s) => [s, {}])), gates: ["gate"], edges: DEFAULT_GRAPH.edges.map((e) => ({ from: e.from, to: e.to, on: e.on ?? null, max: e.on ? 2 : null })) }) };
+  for (const s of subs) drafts[s.name] = normalizeDraft(s.flow ?? { agents: { code: {} }, edges: [], gates: [], start: "code" });
+  const usedBy = Object.fromEntries(subs.map((s) => [s.name, s.usedBy ?? []]));
+  let editing = pageProject.flowTab && drafts[pageProject.flowTab] ? pageProject.flowTab : "main";
+  const renderFlowEditor = (error = editing === "main" ? flowDef?.error ?? null : null) => {
+    const draft = drafts[editing]; const isSub = editing !== "main";
     const master = draft.mode === "master";
     const ids = Object.keys(draft.agents).filter((id) => id !== "master"); const all = [...ids, ...draft.gates];
+    const subNames = Object.keys(drafts).filter((n) => n !== "main" && n !== editing);
     const opt = (list, cur) => list.map((v) => `<option value="${esc(v)}"${v === cur ? " selected" : ""}>${esc(v)}</option>`).join("");
+    const subOpt = (cur) => `<option value="">— eigener Agent</option>` + subNames.map((n) => `<option value="${esc(n)}"${cur === n ? " selected" : ""}>Sub-Flow ${esc(n)}</option>`).join("");
     $("#flow-editor").innerHTML = `
+      <div class="tabs tabs--flows">${Object.keys(drafts).map((n) => `<button class="tab${n === editing ? " is-active" : ""}" type="button" data-flow-tab="${esc(n)}">${n === "main" ? "Hauptflow" : `Sub-Flow ${esc(n)}`}</button>`).join("")}<button class="tab" type="button" id="flow-new">+ Sub-Flow</button></div>
+      <div style="padding-top:12px">
       ${error ? `<div class="alert alert--danger" style="margin-bottom:12px">${icon("alert")}<span>${esc(error)}</span></div>` : ""}
+      ${isSub ? `<div class="dim" style="font-size:12px;margin-bottom:10px">Datei <span class="mono">.agentops/flows/${esc(editing)}.json</span>${(usedBy[editing] ?? []).length ? ` — benutzt von ${esc(usedBy[editing].join(", "))}` : " — noch von keinem Agenten benutzt; im Hauptflow einem Agenten als Sub-Flow zuweisen"}. Ein Sub-Flow braucht kein Gate; sein letztes Urteil wird das Urteil des Agenten außen.</div>` : ""}
       <div class="model-row" style="margin-bottom:14px"><span class="field__label">Modus</span><select class="select select--narrow" id="flow-mode"><option value="graph"${master ? "" : " selected"}>Graph — feste Kanten entscheiden</option><option value="master"${master ? " selected" : ""}>Master — der Master ruft die Agenten</option></select>${master ? `<span class="field__label">höchstens</span><input class="input mono" id="master-max" type="number" min="1" max="30" value="${esc(draft.master.maxSteps)}" style="max-width:70px"><span class="field__label">Entscheidungen je Lauf</span>` : ""}</div>
-      ${master ? `<div class="alert alert--info" style="margin-bottom:12px">${icon("alert")}<span>Der Master (Agent <span class="mono">master</span>, unten einstellbar) liest die Notizen und wählt nach jedem Schritt den nächsten Agenten oder sagt done. <strong>Pflicht</strong>-Agenten laufen vor dem Gate automatisch nach, wenn er sie nicht gerufen hat; Agenten <strong>nach dem Gate</strong> laufen erst nach der Freigabe, in dieser Reihenfolge. Gates bleiben Menschen.</span></div>` : ""}
+      ${master ? `<div class="alert alert--info" style="margin-bottom:12px">${icon("alert")}<span>Der Master (Agent <span class="mono">${esc(isSub ? `${editing}/master` : "master")}</span>, unten einstellbar) liest die Notizen und wählt nach jedem Schritt den nächsten Agenten oder sagt done. <strong>Pflicht</strong>-Agenten laufen ${draft.gates.length ? "vor dem Gate" : "am Ende"} automatisch nach, wenn er sie nicht gerufen hat; Agenten <strong>nach dem Gate</strong> laufen erst nach der Freigabe, in dieser Reihenfolge. Gates bleiben Menschen.</span></div>` : ""}
       <div class="flowed">
         <div class="flowed__col">
           <div class="field__label">Agenten${master ? " — der Pool, aus dem der Master wählt" : ""}</div>
-          ${master
-            ? `<table class="table table--compact"><thead><tr><th>Agent</th><th>Pflicht</th><th>nach Gate</th><th>Beschreibung für den Master</th><th></th></tr></thead><tbody>${ids.map((id) => `<tr><td class="mono">${esc(id)}</td><td><input type="checkbox" data-req="${esc(id)}"${draft.agents[id].required ? " checked" : ""}></td><td><input type="checkbox" data-after="${esc(id)}"${draft.agents[id].after === "gate" ? " checked" : ""}></td><td><input class="input" data-desc="${esc(id)}" value="${esc(draft.agents[id].description ?? "")}" placeholder="aus der Soul, wenn leer" style="width:100%"></td><td class="num">${ids.length > 1 ? `<button type="button" class="chip__x" data-rm-agent="${esc(id)}" title="Agent entfernen">×</button>` : ""}</td></tr>`).join("")}</tbody></table>`
-            : `<div class="chips">${ids.map((id) => `<span class="chip"><span class="mono">${esc(id)}</span>${ids.length > 1 ? `<button type="button" class="chip__x" data-rm-agent="${esc(id)}" title="Agent und seine Kanten entfernen">×</button>` : ""}</span>`).join("")}</div>`}
+          <table class="table table--compact"><thead><tr><th>Agent</th><th>Sub-Flow</th>${master ? `<th>Pflicht</th><th>nach Gate</th><th>Beschreibung für den Master</th>` : ""}<th></th></tr></thead><tbody>
+            ${ids.map((id) => `<tr><td class="mono">${esc(id)}</td><td><select class="select select--narrow" data-sub="${esc(id)}" title="Läuft dieser Agent als Sub-Flow?">${subOpt(draft.agents[id].flow ?? "")}</select></td>${master ? `<td><input type="checkbox" data-req="${esc(id)}"${draft.agents[id].required ? " checked" : ""}></td><td><input type="checkbox" data-after="${esc(id)}"${draft.agents[id].after === "gate" ? " checked" : ""}></td><td><input class="input" data-desc="${esc(id)}" value="${esc(draft.agents[id].description ?? "")}" placeholder="aus der Soul, wenn leer" style="width:100%"></td>` : ""}<td class="num">${ids.length > 1 ? `<button type="button" class="chip__x" data-rm-agent="${esc(id)}" title="Agent und seine Kanten entfernen">×</button>` : ""}</td></tr>`).join("")}
+          </tbody></table>
           <div class="model-row" style="margin-top:6px"><input class="input mono" id="new-agent" placeholder="neuer Agent, z.B. security" style="max-width:220px"><button class="btn btn--secondary btn--sm" id="add-agent" type="button">Agent hinzufügen</button></div>
           <div class="field__label" style="margin-top:14px">Gates (ein Mensch entscheidet)</div>
-          <div class="chips">${draft.gates.map((id) => `<span class="chip chip--gate"><span class="mono">${esc(id)}</span><button type="button" class="chip__x" data-rm-gate="${esc(id)}">×</button></span>`).join("") || `<span class="dim" style="font-size:12px">kein Gate — der Flow wird abgelehnt</span>`}</div>
+          <div class="chips">${draft.gates.map((id) => `<span class="chip chip--gate"><span class="mono">${esc(id)}</span><button type="button" class="chip__x" data-rm-gate="${esc(id)}">×</button></span>`).join("") || `<span class="dim" style="font-size:12px">${isSub ? "kein Gate — im Sub-Flow erlaubt" : "kein Gate — der Flow wird abgelehnt"}</span>`}</div>
           <div class="model-row" style="margin-top:6px"><input class="input mono" id="new-gate" placeholder="neues Gate, z.B. release" style="max-width:220px"><button class="btn btn--secondary btn--sm" id="add-gate" type="button">Gate hinzufügen</button></div>
           ${master ? "" : `<div class="field__label" style="margin-top:14px">Start</div><select class="select select--narrow" id="flow-start">${opt(ids, draft.start)}</select>`}
         </div>
@@ -425,11 +451,22 @@ async function pageProject(name) {
           </div>
         </div>
       </div>
-      <div class="actions" style="margin-top:14px"><button class="btn btn--primary btn--sm" id="flow-save" type="button">Flow speichern</button><button class="btn btn--secondary btn--sm" id="flow-reset" type="button">Verwerfen</button><span class="dim" style="font-size:12px">Speichern committet <span class="mono">.agentops/flow.json</span> und legt fehlende Agenten bei OpenClaw an. Neue Agenten bekommen eine knappe Standard-Soul — unten anpassen.</span></div>`;
+      <div class="actions" style="margin-top:14px"><button class="btn btn--primary btn--sm" id="flow-save" type="button">${isSub ? `Sub-Flow ${esc(editing)} speichern` : "Flow speichern"}</button><button class="btn btn--secondary btn--sm" id="flow-reset" type="button">Verwerfen</button>${isSub && !(usedBy[editing] ?? []).length ? `<button class="btn btn--secondary btn--sm" id="flow-delete" type="button">Sub-Flow löschen</button>` : ""}<span class="dim" style="font-size:12px">Speichern committet die Datei und legt fehlende Agenten bei OpenClaw an. Neue Agenten bekommen eine knappe Standard-Soul — unten anpassen.</span></div>
+      </div>`;
     const ed = $("#flow-editor");
-    ed.querySelectorAll("[data-rm-agent]").forEach((b) => b.addEventListener("click", () => { const id = b.dataset.rmAgent; delete draft.agents[id]; draft.edges = draft.edges.filter((e) => e.from !== id && e.to !== id); if (draft.start === id) draft.start = Object.keys(draft.agents)[0]; renderFlowEditor(null); }));
+    ed.querySelectorAll("[data-flow-tab]").forEach((b) => b.addEventListener("click", () => { editing = b.dataset.flowTab; pageProject.flowTab = editing; renderFlowEditor(); }));
+    $("#flow-new").addEventListener("click", () => {
+      const n = (prompt("Name des neuen Sub-Flows (Kleinbuchstaben, Ziffern, - und _):") ?? "").trim().toLowerCase();
+      if (!n) return;
+      if (!NODE_ID.test(n) || n === "main" || n === "done" || n === "halt") return toast("Ungültiger Name", "error");
+      if (drafts[n]) return toast(`Sub-Flow ${n} gibt es schon`, "error");
+      drafts[n] = normalizeDraft({ agents: { code: {} }, edges: [], gates: [], start: "code" }); usedBy[n] = [];
+      editing = n; pageProject.flowTab = n; renderFlowEditor(null);
+    });
+    ed.querySelectorAll("[data-rm-agent]").forEach((b) => b.addEventListener("click", () => { const id = b.dataset.rmAgent; delete draft.agents[id]; draft.edges = draft.edges.filter((e) => e.from !== id && e.to !== id); if (draft.start === id) draft.start = Object.keys(draft.agents).find((x) => x !== "master") ?? null; renderFlowEditor(null); }));
     ed.querySelectorAll("[data-rm-gate]").forEach((b) => b.addEventListener("click", () => { const id = b.dataset.rmGate; draft.gates = draft.gates.filter((g) => g !== id); draft.edges = draft.edges.filter((e) => e.from !== id && e.to !== id); renderFlowEditor(null); }));
     ed.querySelectorAll("[data-rm-edge]").forEach((b) => b.addEventListener("click", () => { draft.edges.splice(Number(b.dataset.rmEdge), 1); renderFlowEditor(null); }));
+    ed.querySelectorAll("[data-sub]").forEach((s) => s.addEventListener("change", () => { if (s.value) draft.agents[s.dataset.sub].flow = s.value; else delete draft.agents[s.dataset.sub].flow; }));
     $("#add-agent").addEventListener("click", () => {
       const id = $("#new-agent").value.trim().toLowerCase();
       if (!NODE_ID.test(id) || id === "done" || id === "halt") return toast("Name: Kleinbuchstaben, Ziffern, - und _, nicht done/halt", "error");
@@ -442,7 +479,7 @@ async function pageProject(name) {
       if (draft.agents[id] || draft.gates.includes(id)) return toast(`${id} gibt es schon`, "error");
       draft.gates.push(id); renderFlowEditor(null);
     });
-    $("#add-edge").addEventListener("click", () => {
+    $("#add-edge")?.addEventListener("click", () => {
       const from = $("#edge-from").value, to = $("#edge-to").value, on = $("#edge-on").value.trim().toUpperCase() || null, max = Number($("#edge-max").value) || null;
       if (from === to) return toast("Eine Kante von einem Knoten zu sich selbst geht nicht", "error");
       if (!on && draft.edges.some((e) => e.from === from && !e.on)) return toast(`${from} hat schon eine Standardkante — erst lösen`, "error");
@@ -455,26 +492,39 @@ async function pageProject(name) {
     ed.querySelectorAll("[data-after]").forEach((c) => c.addEventListener("change", () => { if (c.checked) draft.agents[c.dataset.after].after = "gate"; else delete draft.agents[c.dataset.after].after; }));
     ed.querySelectorAll("[data-desc]").forEach((i) => i.addEventListener("change", () => { const v = i.value.trim(); if (v) draft.agents[i.dataset.desc].description = v; else delete draft.agents[i.dataset.desc].description; }));
     $("#flow-reset").addEventListener("click", () => { pageProject.tab = active; pageProject(name); });
+    $("#flow-delete")?.addEventListener("click", async () => {
+      if (!confirm(`Sub-Flow ${editing} löschen?`)) return;
+      try { await api(`/projects/${encodeURIComponent(name)}/flows/${editing}`, { method: "DELETE" }); toast(`Sub-Flow ${editing} gelöscht`); pageProject.flowTab = "main"; pageProject(name); }
+      catch (e) { renderFlowEditor(e.message); }
+    });
     $("#flow-save").addEventListener("click", async () => {
       const btn = $("#flow-save"); btn.disabled = true;
+      const body = { mode: draft.mode, master: draft.master, start: draft.start, agents: draft.agents, gates: draft.gates, edges: draft.edges.map((e) => ({ from: e.from, to: e.to, ...(e.on ? { on: e.on } : {}), ...(e.max ? { max: e.max } : {}) })) };
       try {
-        const r = await api(`/projects/${encodeURIComponent(name)}/flow`, { method: "PUT", body: { mode: draft.mode, master: draft.master, start: draft.start, agents: draft.agents, gates: draft.gates, edges: draft.edges.map((e) => ({ from: e.from, to: e.to, ...(e.on ? { on: e.on } : {}), ...(e.max ? { max: e.max } : {}) })) } });
-        toast(`Flow gespeichert, Commit ${r.commit}`); pageProject.tab = active; pageProject(name);
+        const r = await api(isSub ? `/projects/${encodeURIComponent(name)}/flows/${editing}` : `/projects/${encodeURIComponent(name)}/flow`, { method: "PUT", body });
+        toast(`${isSub ? `Sub-Flow ${editing}` : "Flow"} gespeichert, Commit ${r.commit}`); pageProject.tab = active; pageProject.flowTab = editing; pageProject(name);
       } catch (e) { renderFlowEditor(e.message); btn.disabled = false; }
     });
   };
   renderFlowEditor();
 
+
   // Karte: der Graph des Projekts, Flows als Lichtpunkte — alle 5 s frisch, ohne die Seite neu zu bauen
   const mapEl = $("#map");
+  // Die Karte zeigt den Hauptflow; ein Klick auf ein Sechseck (Agent mit Sub-Flow) taucht in dessen Graphen ein, „← Hauptflow“ zurück
+  let mapGraph = graph;
+  const showGraph = (gr) => { mapGraph = gr; $("#map-back").hidden = gr === graph; liveMap?.update(mine(), null, gr); };
   liveMap = mountProjectMap(mapEl, { onSelect: (step) => {
-    // Klick auf einen Agenten in der Karte → sein Editor unten; ein Gate → die offenen Freigaben
+    // Klick auf einen Agenten in der Karte → sein Editor unten; ein Sub-Flow → hinein; ein Gate → die offenen Freigaben
+    const node = mapGraph.nodes.find((n) => n.id === step);
+    if (node?.kind === "flow" && subflows[node.flow]) { showGraph(graphOf(subflows[node.flow].flow, subflows[node.flow].path, `${step}/`)); return; }
     if (nodeIds.includes(step)) { page().querySelector(`.tab[data-tab="${step}"]`)?.click(); $("#soul-body")?.scrollIntoView({ behavior: "smooth", block: "center" }); }
-    else if (graph.nodes.some((n) => n.id === step && n.kind === "gate")) location.hash = "#/gates";
+    else if (node?.kind === "gate") location.hash = "#/gates";
   } });
+  $("#map-back").addEventListener("click", () => showGraph(graph));
   liveMap.update(mine(), null, graph);
   liveMap.timer = setInterval(async () => {
-    try { const idx = await pipelineIndex(); const cur = [...idx.values()].filter((f) => f.state?.repo === name); liveMap?.update(cur, null, graph); const c = $("#map-count"); if (c) c.textContent = `${cur.filter((f) => f.status === "running").length} Flows arbeiten`; } catch {}
+    try { const idx = await pipelineIndex(); const cur = [...idx.values()].filter((f) => f.state?.repo === name); liveMap?.update(cur, null, mapGraph); const c = $("#map-count"); if (c) c.textContent = `${cur.filter((f) => f.status === "running").length} Flows arbeiten`; } catch {}
   }, 5000);
   const origDispose = liveMap.dispose; liveMap.dispose = () => { clearInterval(liveMap.timer); origDispose(); };
   page().querySelectorAll(".tab").forEach((b) => b.addEventListener("click", () => { page().querySelectorAll(".tab").forEach((t) => t.classList.toggle("is-active", t === b)); pageProject.tab = b.dataset.tab; renderAgent(b.dataset.tab); }));
