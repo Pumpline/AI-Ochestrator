@@ -165,6 +165,17 @@ mit eigener Soul (`extraSystemPrompt`), `promptMode: minimal` und `lightContext`
 }
 ```
 
+**Master-Modus (Stufe 2).** `"mode": "master"` in flow.json: statt fester Kanten entscheidet der Projekt-Master (Agent
+`master`, Vorlage `pipeline-master` mit `infra/openclaw/souls/master.md`, Tools read/write/exec) nach jedem Schritt, welcher
+Agent als nächstes dran ist. Er bekommt Ziel, die Agenten mit Beschreibung (`description`, sonst die erste Zeile ihrer
+Soul), was schon lief und mit welchem Urteil, und schreibt seine Begründung nach `.agentops/master.md` — die letzte Zeile
+`NEXT: <agent>` oder `NEXT: done` ist die Entscheidung. Regeln, die das Plugin durchsetzt: Agenten mit `"required": true`
+laufen vor dem Gate automatisch nach, wenn der Master sie nicht gerufen hat; Agenten mit `"after": "gate"` (z.B. ship)
+laufen erst nach der Freigabe, in ihrer Reihenfolge; Gates bleiben Menschen; höchstens `master.maxSteps` Entscheidungen
+(Standard 8), danach geht es ohne ihn weiter. Jede Entscheidung ist ein Modellaufruf mit minimalem Kontext (rund 6–8 s,
+wenige Cent). Im Cockpit: Modus-Schalter im Flow-Editor, je Agent Pflicht, „nach Gate“ und Beschreibung; der Master hat
+wie jeder Knoten Modell, Effort, Tools und Soul je Projekt.
+
 Im Cockpit bearbeitet die Projektseite den Flow („Flow des Projekts“: Agenten hinzufügen/entfernen, Gates, Start, Kanten
 verbinden/lösen); das Plugin prüft die Definition (`POST /flow/validate`), das Cockpit committet sie und stößt den Abgleich
 der Projekt-Agenten an. Ein Agent ohne Vorlage (nicht plan/code/test/review/ship) bekommt eine knappe Standard-Soul, die
